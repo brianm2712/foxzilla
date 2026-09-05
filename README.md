@@ -121,6 +121,15 @@ Host keys are trust-on-first-use: an unknown host is pinned the first time you c
 
 A fuller set of site examples is in [`docs/sites.example.json`](docs/sites.example.json).
 
+## When a connection won't come up
+
+```
+python3 client/foxzilla.py --list
+python3 client/foxzilla.py --check mediadrop
+```
+
+`--check` connects to one site from the terminal and prints the actual dialogue with the server, password redacted, plus the home directory and its first few entries. A GUI can only say "it didn't connect"; this shows where it stopped — no prompt appeared, authentication refused, connected but the listing was empty.
+
 ## Tests
 
 ```

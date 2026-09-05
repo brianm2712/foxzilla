@@ -367,12 +367,16 @@ class SFTPBackend(Backend):
         # only read a password from a terminal - never from a pipe, and never
         # under BatchMode.
         self.password = password or ""
+        self.transcript: list[str] = []
         self.label = label or f"sftp://{user + '@' if user else ''}{host}"
-        # Kept short deliberately: macOS caps unix socket paths at ~104 bytes,
-        # and this one has the host and port appended by ssh at connect time.
-        self._ctl = os.path.join(
-            tempfile.gettempdir(), f".{APP}-{os.getuid()}-%r@%h-%p"
-        )
+        # Kept short deliberately: a unix socket path is capped near 104 bytes
+        # and ssh expands %r/%h/%p into this before binding, so a long temp
+        # directory plus a long hostname will silently break multiplexing.
+        # macOS's gettempdir() is a ~50-character per-user path, so prefer
+        # /tmp where it is usable.
+        base = "/tmp" if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK) \
+            else tempfile.gettempdir()
+        self._ctl = os.path.join(base, f".{APP}-{os.getuid()}-%r@%h-%p")
         self._home = None
 
     # -- plumbing ---------------------------------------------------------
@@ -413,7 +417,10 @@ class SFTPBackend(Backend):
         """Quote a path for the sftp command language."""
         return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
-    _PROMPT = re.compile(rb"(?i)(password|passcode|verification code)\s*:\s*$")
+    _PROMPT = re.compile(rb"(?i)(password|passcode|verification code)\s*:\s*\Z")
+    # The prompt arrives with no trailing newline and servers word it
+    # differently, so also match it anywhere in the chunk just read.
+    _PROMPT_ANY = re.compile(rb"(?i)(password|passcode|verification code)\s*:")
 
     def _run_with_password(self, script, timeout):
         """
@@ -429,6 +436,7 @@ class SFTPBackend(Backend):
         os.chmod(batch, 0o600)
         master, slave = pty.openpty()
         out = b""
+        transcript = []
         try:
             try:
                 proc = subprocess.Popen(
@@ -450,15 +458,22 @@ class SFTPBackend(Backend):
                     if not chunk:
                         break
                     out += chunk
-                    tail = out.rsplit(b"\n", 1)[-1].strip()
-                    if not answered and self._PROMPT.search(tail):
+                    tail = re.split(rb"[\r\n]", out)[-1].strip()
+                    if not answered and (self._PROMPT.search(tail)
+                                         or self._PROMPT_ANY.search(chunk)):
                         os.write(master, self.password.encode() + b"\n")
                         answered = True
+                        transcript.append("<password sent>")
                 elif proc.poll() is not None:
                     break
                 if time.monotonic() > deadline:
                     proc.kill()
-                    raise TransferError("sftp timed out")
+                    if not answered:
+                        raise TransferError(
+                            f"no password prompt appeared from {self.target} "
+                            "within the timeout — the server may be offering "
+                            "only key auth, or the connection stalled")
+                    raise TransferError("sftp timed out after sending the password")
             proc.wait()
         finally:
             if slave is not None:
@@ -473,6 +488,8 @@ class SFTPBackend(Backend):
                 pass
 
         text = out.decode("utf-8", "replace")
+        self.transcript = transcript + [
+            ln for ln in text.splitlines() if ln.strip()]
         # Drop the prompt itself and the terminal's echo of our commands.
         keep = [ln for ln in text.splitlines()
                 if not self._PROMPT.search(ln.strip().encode())]
@@ -2216,13 +2233,92 @@ class App:
         self.root.destroy()
 
 
-def main():
+def check_site(name):
+    """
+    Connect to one site from the terminal and report what happened.
+
+        python3 foxzilla.py --check mediadrop
+
+    Exists because a GUI can only say "it didn't connect". This prints the
+    actual dialogue with the server - with the password redacted - so a
+    failure can be read rather than guessed at.
+    """
+    import getpass
+
+    sites = load_sites()
+    site = next((x for x in sites if x["name"].lower() == name.lower()), None)
+    if not site:
+        print(f"No site called {name!r}. Known: "
+              + ", ".join(x["name"] for x in sites))
+        return 1
+
+    print(f"site      : {site['name']}  ({site.get('type')})")
+    for k in ("host", "user", "port", "auth", "url", "bucket", "path"):
+        if site.get(k):
+            print(f"{k:10}: {site[k]}")
+
+    password = ""
+    if needs_password(site):
+        password = load_secrets().get(site["name"], "")
+        if not password:
+            password = getpass.getpass("password  : ")
+
+    backend = make_backend(site, password)
+    print(f"control   : {getattr(backend, '_ctl', '(n/a)')}")
+    try:
+        backend.connect()
+    except Exception as e:                                   # noqa: BLE001
+        print(f"\nFAILED    : {e}")
+        for line in getattr(backend, "transcript", []):
+            print("  | " + (line.replace(password, "***") if password else line))
+        print("\nIf no password prompt appeared, the server may want a key "
+              "instead — clear the site's Auth field to use key auth.")
+        return 1
+
+    print(f"connected : home is {backend.home()}")
+    try:
+        entries = backend.listdir(backend.home())
+    except Exception as e:                                   # noqa: BLE001
+        print(f"listing   : FAILED — {e}")
+        return 1
+    print(f"listing   : {len(entries)} entries in {backend.home()}")
+    for e in sorted(entries, key=lambda e: e.sort_key)[:15]:
+        kind = "dir " if e.is_dir else "file"
+        print(f"  {kind} {human(e.size):>8}  {e.name}")
+    if not entries:
+        print("  (empty — if you expected a folder here, check the account's "
+              "chroot and that it can read the directory)")
+    try:
+        backend.close()
+    except Exception:                                        # noqa: BLE001
+        pass
+    return 0
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in ("--check", "-c"):
+        if len(argv) < 2:
+            print("usage: foxzilla.py --check <site name>")
+            return 2
+        return check_site(argv[1])
+    if argv and argv[0] in ("--list", "-l"):
+        for x in load_sites():
+            print(f"  {x['name']:24} {x.get('type')}  {x.get('host', x.get('path', ''))}")
+        return 0
+    if argv and argv[0] in ("--help", "-h"):
+        print(__doc__)
+        print("  --list            show configured sites")
+        print("  --check <site>    connect to one site and report what happened")
+        return 0
+
     if not os.path.exists(SITES_FILE):
         save_sites(DEFAULT_SITES)
     root = tk.Tk()
     App(root)
     root.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
