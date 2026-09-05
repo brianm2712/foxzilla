@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Foxzilla</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+
+<header>
+  <svg class="mark" viewBox="0 0 100 100" aria-hidden="true">
+    <rect width="100" height="100" rx="22" fill="#1C1E21"/>
+    <path d="M22 38h34v-9l20 14-20 14v-9H22z" fill="#FFB020"/>
+    <path d="M78 62H44v9L24 57l20-14v9h34z" fill="#DEDEDA"/>
+  </svg>
+  <h1>Foxzilla</h1>
+  <span class="spacer"></span>
+  <span class="status" id="status">not connected</span>
+  <button id="connectBtn" class="accent">Connect…</button>
+  <button id="disconnectBtn" hidden>Disconnect</button>
+</header>
+
+<main>
+  <section class="pane" id="localPane">
+    <h2>Your files</h2>
+    <div class="bar">
+      <button id="pickBtn" class="small">Choose files…</button>
+      <button id="pickDirBtn" class="small" hidden>Choose folder…</button>
+      <span class="path" id="localPath">drag files here, or choose them</span>
+      <button id="clearLocalBtn" class="small">Clear</button>
+    </div>
+    <div class="list" id="localList" aria-label="Your files">
+      <p class="empty">Nothing selected yet.</p>
+    </div>
+    <p class="note">Files stay in your browser until you send them. Nothing is
+      uploaded to look at it — the check below hashes them here first.</p>
+  </section>
+
+  <section class="pane" id="remotePane">
+    <h2>Remote</h2>
+    <div class="bar">
+      <button id="upBtn" class="small" title="Parent folder">↑</button>
+      <button id="refreshBtn" class="small" title="Refresh">↻</button>
+      <span class="path" id="remotePath">not connected</span>
+      <button id="mkdirBtn" class="small">New folder</button>
+      <button id="delBtn" class="small">Delete</button>
+    </div>
+    <div class="list" id="remoteList" aria-label="Remote files">
+      <p class="empty">Connect to a server to browse it.</p>
+    </div>
+    <div class="bar">
+      <button id="sendBtn" class="accent" disabled>→ Send</button>
+      <button id="fetchBtn" disabled>← Fetch</button>
+      <label style="margin-left:.6rem;font-size:.88rem;color:var(--muted)">
+        <input type="checkbox" id="scanFirst" checked style="width:auto"> Check the destination first
+      </label>
+    </div>
+  </section>
+</main>
+
+<div class="queue" id="queueWrap" hidden>
+  <h2>Queue</h2>
+  <div id="queue"></div>
+</div>
+
+<footer>
+  Foxzilla — connects only to public internet addresses; private, loopback and
+  metadata ranges are refused. Your credentials live in this session only and
+  are never written to disk. <a href="https://github.com/brianm2712/foxzilla">Source</a>.
+</footer>
+
+<dialog id="connectDlg">
+  <form method="dialog" id="connectForm">
+    <div class="body">
+      <h3>Connect to a server</h3>
+      <p class="sub">Your details are held for this session only.</p>
+      <label class="field"><span>Type</span>
+        <select id="cType">
+          <option value="sftp">SFTP</option>
+          <option value="ftp">FTP</option>
+          <option value="ftps">FTPS</option>
+          <option value="dav">WebDAV</option>
+        </select>
+      </label>
+      <div id="hostFields">
+        <div class="two">
+          <label class="field"><span>Host</span><input id="cHost" autocomplete="off" placeholder="files.example.com"></label>
+          <label class="field"><span>Port</span><input id="cPort" inputmode="numeric" placeholder="22"></label>
+        </div>
+      </div>
+      <label class="field" id="urlField" hidden><span>URL</span>
+        <input id="cUrl" autocomplete="off" placeholder="https://host/remote.php/dav/files/me">
+      </label>
+      <div class="two">
+        <label class="field"><span>Username</span><input id="cUser" autocomplete="username"></label>
+        <label class="field"><span>Password</span><input id="cPass" type="password" autocomplete="current-password"></label>
+      </div>
+      <p class="err" id="connectErr" hidden></p>
+    </div>
+    <div class="foot">
+      <button value="cancel">Cancel</button>
+      <button value="go" class="accent" id="connectGo">Connect</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="scanDlg">
+  <div class="body">
+    <h3 id="scanTitle">Already at the destination</h3>
+    <p class="sub" id="scanSub"></p>
+    <div class="scan" id="scanList"></div>
+    <div class="choices" style="margin-top:1rem">
+      <label><input type="radio" name="mode" value="skip" checked style="width:auto"> Send only what is new</label>
+      <label><input type="radio" name="mode" value="replace" style="width:auto"> Send new files, and overwrite the ones that differ</label>
+      <label><input type="radio" name="mode" value="all" style="width:auto"> Send everything, overwriting</label>
+    </div>
+  </div>
+  <div class="foot">
+    <button id="scanCancel">Cancel</button>
+    <button id="scanGo" class="accent">Transfer</button>
+  </div>
+</dialog>
+
+<dialog id="promptDlg">
+  <form method="dialog">
+    <div class="body">
+      <h3 id="promptTitle">New folder</h3>
+      <label class="field"><span id="promptLabel">Name</span><input id="promptInput"></label>
+    </div>
+    <div class="foot">
+      <button value="cancel">Cancel</button>
+      <button value="ok" class="accent">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/app.js"></script>
+</html>

@@ -1712,8 +1712,34 @@ def when(ts):
 # GUI
 # --------------------------------------------------------------------------
 
-import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+def _headless_tk():
+    """
+    Stand-ins for Tk, for machines with no display libraries.
+
+    Everything above this point — the backends, the queue, the scan — is
+    useful without a window, and the hosted version imports this very file to
+    get it. Rather than split Foxzilla into two files and lose "copy one
+    script anywhere", supply the few names the GUI needs at import time. They
+    are only ever used as base classes; every real Tk call happens inside a
+    method, which never runs without a window. Asking for the window without
+    Tk still fails loudly, in main().
+    """
+    import types
+    tk_stub = types.ModuleType("tkinter")
+    tk_stub.Toplevel = tk_stub.Frame = tk_stub.Text = tk_stub.Menu = object
+    tk_stub.TclError = Exception
+    ttk_stub = types.ModuleType("tkinter.ttk")
+    ttk_stub.Frame = object
+    return tk_stub, ttk_stub, None, None
+
+
+try:
+    import tkinter as tk
+    from tkinter import messagebox, simpledialog, ttk
+    HAVE_TK = True
+except ImportError:                              # headless: backends only
+    tk, ttk, messagebox, simpledialog = _headless_tk()
+    HAVE_TK = False
 
 
 class Pane(ttk.Frame):
@@ -2670,6 +2696,11 @@ def main(argv=None):
         print("  --list            show configured sites")
         print("  --check <site>    connect to one site and report what happened")
         return 0
+
+    if not HAVE_TK:
+        print("Foxzilla's window needs Tkinter — install python3-tk, or use "
+              "--list / --check, which work without it.", file=sys.stderr)
+        return 1
 
     if not os.path.exists(SITES_FILE):
         save_sites(DEFAULT_SITES)
