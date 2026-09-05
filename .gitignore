@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.log
+credentials.json
+secrets.json
+sites.json
+state.json
+receipts/
