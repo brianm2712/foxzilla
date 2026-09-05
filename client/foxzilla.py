@@ -1901,6 +1901,7 @@ class App:
         # tests included - gets the same window instead of default grey.
         self.style = apply_theme(root)
         root.title(f"Foxzilla {VERSION}")
+        self._set_window_icon(root)
         root.geometry("1100x680")
         self.sites = load_sites()
         self.focus_pane = None
@@ -2013,6 +2014,26 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.quit)
         self._pump()
         self.left.connect()
+
+    @staticmethod
+    def _set_window_icon(root):
+        """
+        Use the installed icon for the window and taskbar if it is there.
+
+        Purely cosmetic, and entirely optional - running the script straight
+        out of a checkout should not depend on having installed anything.
+        """
+        for path in (
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "foxzilla.png"),
+            os.path.expanduser("~/.local/share/foxzilla/foxzilla.png"),
+            os.path.expanduser("~/.local/share/icons/hicolor/256x256/apps/foxzilla.png"),
+        ):
+            try:
+                if os.path.exists(path):
+                    root.iconphoto(True, tk.PhotoImage(file=path))
+                    return
+            except tk.TclError:
+                continue
 
     # -- menu -------------------------------------------------------------
 

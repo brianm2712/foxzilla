@@ -29,7 +29,7 @@ cp "$ROOT/client/foxzilla.py" "$APP/Contents/Resources/foxzilla.py"
 if command -v iconutil >/dev/null 2>&1; then
     ICONSET=$(mktemp -d)/Foxzilla.iconset
     mkdir -p "$ICONSET"
-    python3 "$ROOT/build/icon.py" "$ICONSET" >/dev/null
+    python3 "$ROOT/build/icon.py" "$ICONSET" arrows >/dev/null
     cp "$ICONSET/icon_32x32.png"     "$ICONSET/icon_16x16@2x.png"
     cp "$ICONSET/icon_64x64.png"     "$ICONSET/icon_32x32@2x.png"
     cp "$ICONSET/icon_256x256.png"   "$ICONSET/icon_128x128@2x.png"
