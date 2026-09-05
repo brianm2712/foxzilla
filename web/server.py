@@ -35,6 +35,7 @@ import posixpath
 import secrets
 import socketserver
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -68,6 +69,28 @@ class Session:
         self.backend: fz.Backend | None = None
         self.label = ""
         self.lock = threading.Lock()
+        # A listing is expensive on a busy folder — thousands of entries over
+        # FTP is seconds, not milliseconds — and the UI always lists a folder
+        # immediately before scanning it. Reusing that one fetch turns a
+        # duplicate round trip into nothing.
+        self._listings: dict[str, tuple[float, list]] = {}
+
+    LISTING_TTL = 20
+
+    def listing(self, path, fresh=False):
+        hit = self._listings.get(path)
+        if not fresh and hit and time.time() - hit[0] < self.LISTING_TTL:
+            return hit[1]
+        entries = self.backend.listdir(path)
+        self._listings[path] = (time.time(), entries)
+        return entries
+
+    def forget(self, path=None):
+        """Drop cached listings after anything that changes the target."""
+        if path is None:
+            self._listings.clear()
+        else:
+            self._listings.pop(path, None)
 
     @property
     def expired(self):
@@ -155,8 +178,12 @@ def build_backend(cfg: dict) -> tuple[fz.Backend, str]:
     if kind == "sftp":
         if not password:
             raise egress.Refused("this service can only use password auth for SFTP")
-        backend = fz.SFTPBackend(host=addr, user=user, port=port,
-                                 password=password, label=label)
+        backend = fz.SFTPBackend(
+            host=addr, user=user, port=port, password=password, label=label,
+            # Private to this connection, and inside the unit's PrivateTmp,
+            # so nothing is remembered between visitors.
+            known_hosts=os.path.join(tempfile.gettempdir(),
+                                     f".fzweb-hosts-{secrets.token_hex(8)}"))
     else:
         backend = fz.FTPBackend(host=addr, user=user or "anonymous",
                                 password=password, port=port,
@@ -171,6 +198,23 @@ def build_backend(cfg: dict) -> tuple[fz.Backend, str]:
 # A far-side failure is the target's problem, not ours: a missing folder or a
 # refused login is a 502, not an internal error. Only genuine bugs reach 500.
 BACKEND_ERRORS = (fz.TransferError, ftplib.Error, OSError, EOFError)
+
+
+# Cloudflare replaces an origin 5xx with its own error page, so a visitor who
+# mistypes a password would see "error code: 502" instead of "authentication
+# failed". These are the target's answers, not our failures, so they get 4xx
+# and the message actually reaches the browser.
+AUTH_HINTS = ("authentication failed", "permission denied", "login",
+              "not logged in", "530", "credentials")
+
+
+def error_status(msg: str) -> int:
+    low = msg.lower()
+    if any(h in low for h in AUTH_HINTS):
+        return 401
+    if "not connected" in low:
+        return 409
+    return 400
 
 
 def clean_error(e: Exception) -> str:
@@ -206,12 +250,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if self.close_connection:
+            self.send_header("Connection", "close")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
     def _fail(self, msg, code=400):
+        # If a body was sent and we never read it, this connection is out of
+        # step: with keep-alive the leftover bytes get parsed as the next
+        # request line. That corrupts the next request and, worse, puts the
+        # body into the access log - which is precisely where a password
+        # would be. Close rather than desync.
+        if int(self.headers.get("Content-Length") or 0) > 0:
+            self.close_connection = True
         self._json({"error": str(msg)}, code)
 
     def _body(self, limit=1024 * 1024):
@@ -251,7 +304,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except egress.Refused as e:
             self._fail(e, 403)
         except BACKEND_ERRORS as e:
-            self._fail(clean_error(e), 502)
+            msg = clean_error(e)
+            self._fail(msg, error_status(msg))
         except Exception as e:                   # noqa: BLE001
             self._fail(f"{type(e).__name__}: {e}", 500)
 
@@ -274,7 +328,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except egress.Refused as e:
             self._fail(e, 403)
         except BACKEND_ERRORS as e:
-            self._fail(clean_error(e), 502)
+            msg = clean_error(e)
+            self._fail(msg, error_status(msg))
         except Exception as e:                   # noqa: BLE001
             self._fail(f"{type(e).__name__}: {e}", 500)
 
@@ -315,7 +370,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         s = self._need()
         path = clean_path((q.get("path") or ["/"])[0])
         with s.lock:
-            entries = s.backend.listdir(path)[:MAX_LISTING]
+            entries = s.listing(path, fresh=True)[:MAX_LISTING]
         return self._json({
             "path": path,
             "parent": s.backend.parent(path),
@@ -329,6 +384,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         target = posixpath.join(clean_path(b.get("path")), str(b.get("name", ""))[:255])
         with s.lock:
             s.backend.mkdir(target)
+            s.forget(posixpath.dirname(target) or '/')
         return self._json({"ok": True})
 
     def api_delete(self):
@@ -339,6 +395,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._fail("refusing to delete the root of the target")
         with s.lock:
             (s.backend.rmdir if b.get("dir") else s.backend.remove)(target)
+            s.forget(posixpath.dirname(target) or '/')
         return self._json({"ok": True})
 
     # -- the scan ---------------------------------------------------------
@@ -360,8 +417,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         with s.lock:
             try:
-                known = {e.name: e for e in s.backend.listdir(dest)}
-            except fz.TransferError:
+                known = {e.name: e for e in s.listing(dest)}
+            except BACKEND_ERRORS:
                 known = {}
 
         out = []
@@ -417,6 +474,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     got += len(chunk)
             with s.lock:
                 s.backend.write_from(tmp, posixpath.join(dest, name))
+                s.forget(dest)
         finally:
             try:
                 os.remove(tmp)

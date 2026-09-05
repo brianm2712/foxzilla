@@ -362,7 +362,7 @@ class SFTPBackend(Backend):
     scheme = "sftp"
 
     def __init__(self, host, user=None, port=None, label=None, identity=None,
-                 password="", start=None):
+                 password="", start=None, known_hosts=None):
         self.host = host
         self.user = user or ""
         self.port = port
@@ -370,6 +370,10 @@ class SFTPBackend(Backend):
         # A site can pin the directory it opens in, which is how a deep drop
         # folder becomes one click rather than five.
         self.start = start
+        # Somewhere to record the host key. The desktop client wants the
+        # user's own known_hosts; a shared service must NOT, or the first
+        # visitor to reach a host decides for everyone after them.
+        self.known_hosts = known_hosts
         # When set, authentication happens over a pty because OpenSSH will
         # only read a password from a terminal - never from a pipe, and never
         # under BatchMode.
@@ -407,6 +411,9 @@ class SFTPBackend(Backend):
             # every first connection, which tells the user nothing.
             "-o", "StrictHostKeyChecking=accept-new",
         ]
+        if self.known_hosts:
+            args += ["-o", f"UserKnownHostsFile={self.known_hosts}",
+                     "-o", "GlobalKnownHostsFile=/dev/null"]
         if self.password:
             args += [
                 "-o", "NumberOfPasswordPrompts=1",

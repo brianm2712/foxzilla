@@ -105,7 +105,7 @@ print("\nnothing works without a session")
 for method, path in [("GET", "/api/list?path=/"), ("POST", "/api/mkdir"),
                      ("POST", "/api/delete"), ("POST", "/api/scan")]:
     code, body = A.request(method, path, {} if method == "POST" else None)
-    check(f"{method} {path.split('?')[0]} needs a connection", code == 502, code)
+    check(f"{method} {path.split('?')[0]} needs a connection", code == 409, code)
 
 # -- relax the guard so the app behind it can be tested --------------------
 print("\n[guard relaxed for the transfer tests only]")
@@ -139,7 +139,7 @@ check("marks directories", any(e["dir"] for e in body["entries"] if e["name"] ==
 print("\na second visitor gets their own session")
 B = Client()
 code, body = B.request("GET", "/api/list?path=/")
-check("other visitor is not connected", code == 502, code)
+check("other visitor is not connected", code == 409, code)
 code, body = B.request("GET", "/api/session")
 check("and sees no label", code == 200 and not body.get("connected"), body)
 
@@ -190,13 +190,41 @@ for given, want in [("/../../etc", "/etc"), ("/..", "/"), ("", "/"),
     check(f"clean_path({given!r}) stays inside root", got == want and got.startswith("/"),
           f"got {got!r}, wanted {want!r}")
 code, body = A.request("GET", "/api/list?path=/../../etc")
-check("a traversal attempt reaches no listing", code in (200, 502), code)
+check("a traversal attempt reaches no listing", code in (200, 400), code)
+
+print("\nthe visitor sees the target's answer, not a gateway error")
+check("a wrong password maps to 401", srv.error_status("authentication failed for x") == 401)
+check("no session maps to 409", srv.error_status("not connected") == 409)
+check("anything else is a 400, never 5xx", srv.error_status("no such folder") == 400)
+
+print("\nan unread body never bleeds into the next request")
+# The bug this covers: a handler that errors before reading the body leaves
+# the bytes in the socket, and with keep-alive they get parsed as the next
+# request line — corrupting it, and printing the body into the access log,
+# which is where a password would be.
+import http.client as _hc
+conn = _hc.HTTPConnection("127.0.0.1", PORT, timeout=20)
+payload = json.dumps({"path": "/", "secret": "hunter2-should-never-be-logged"}).encode()
+conn.request("POST", "/api/mkdir", body=payload,
+             headers={"Content-Type": "application/json"})   # no session -> errors
+r1 = conn.getresponse(); first = r1.status; r1.read()
+check("the erroring request answers", first in (400, 409), first)
+check("and asks to close rather than desync",
+      (r1.getheader("Connection") or "").lower() == "close", r1.getheader("Connection"))
+conn.close()
+
+# Prove the next request on a fresh connection is unaffected and well-formed.
+conn2 = _hc.HTTPConnection("127.0.0.1", PORT, timeout=20)
+conn2.request("GET", "/api/health")
+r2 = conn2.getresponse(); body2 = r2.read(); conn2.close()
+check("the following request is clean", r2.status == 200 and b'"ok"' in body2,
+      f"{r2.status} {body2[:40]}")
 
 print("\ndisconnect clears the session")
 code, body = A.request("POST", "/api/disconnect")
 check("disconnect", code == 200, code)
 code, body = A.request("GET", "/api/list?path=/")
-check("no longer connected", code == 502, code)
+check("no longer connected", code == 409, code)
 
 egress.BLOCKED_V4 = real_v4
 egress._blocked_reason = _real_reason
