@@ -1,0 +1,11 @@
+[
+  { "name": "Local", "type": "local" },
+
+  { "name": "DVD rips (barabus)", "type": "sftp",
+    "host": "100.68.85.2", "user": "barabus",
+    "_comment": "collect MakeMKV rips from ~/Videos/dvd-rips; key auth, talos is already authorised" },
+
+  { "name": "mediadrop", "type": "sftp",
+    "host": "100.102.227.73", "user": "mediadrop", "auth": "password",
+    "_comment": "the upload drop the pickup service watches; chrooted, prompts for a password" }
+]
