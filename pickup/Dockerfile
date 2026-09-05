@@ -19,7 +19,10 @@ RUN chmod +x /app/media_pickup.py /app/docker-entrypoint.sh
 # atomic-rename guarantee holds only if each destination is a single volume.
 VOLUME ["/incoming", "/movies", "/tv", "/config"]
 
-ENV UPLOAD_DIR=/incoming \
+# The credential lives on the /config volume, not in the container's HOME,
+# so a rebuilt or replaced container keeps the operator's login.
+ENV MEDIA_PICKUP_CREDENTIALS=/config/credentials.json \
+    UPLOAD_DIR=/incoming \
     MOVIES_DEST=/movies \
     SHOWS_DEST=/tv \
     STATE_FILE=/config/state.json \
