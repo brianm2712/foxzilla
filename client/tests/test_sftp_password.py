@@ -19,32 +19,42 @@ SECRET = "correct-horse-battery"
 
 fakedir = tempfile.mkdtemp()
 fake = os.path.join(fakedir, "sftp")
+# This stand-in mimics *interactive* sftp, because that is what the real thing
+# does. An earlier version of this test accepted `-b <file>` and read the
+# commands from it — which real sftp will not do while asking for a password,
+# since -b turns on batch mode and batch mode suppresses the prompt entirely.
+# The test passed and the feature did not work. Stand-ins must copy the
+# behaviour that matters, not the behaviour that is convenient.
 with open(fake, "w") as fh:
     fh.write(f'''#!/bin/sh
-# Stand-in for OpenSSH sftp: prompt on the tty, then run the batch file.
-batch=""
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -b) batch="$2"; shift 2 ;;
-        *) shift ;;
-    esac
+# Refuse -b outright, the way batch mode effectively does here.
+for a in "$@"; do
+    if [ "$a" = "-b" ]; then
+        echo "mediadrop@host: Permission denied (publickey,password)."
+        exit 255
+    fi
 done
 printf "mediadrop@192.168.68.54's password: "
 read -r pw
 echo ""
-if [ "$pw" = "{SECRET}" ]; then
-    while IFS= read -r line; do
-        echo "sftp> $line"
-        case "$line" in
-            *pwd*) echo "Remote working directory: /" ;;
-            *"ls -la"*) echo "drwxrwxr-x    ? mediadrop mediadrop     4096 Sep  5 12:06 /upload" ;;
-        esac
-    done < "$batch"
-    exit 0
-else
+if [ "$pw" != "{SECRET}" ]; then
     echo "Permission denied, please try again."
     exit 255
 fi
+# Authenticated. Real sftp announces itself and shows a prompt *before*
+# waiting for input; printing it only after reading would deadlock a client
+# that waits for the prompt before writing.
+echo "Connected to 192.168.68.54."
+printf "sftp> "
+while IFS= read -r line; do
+    printf "sftp> %s\\n" "$line"
+    case "$line" in
+        *quit*) exit 0 ;;
+        *pwd*) echo "Remote working directory: /" ;;
+        *"ls -la"*) echo "drwxrwxr-x    ? mediadrop mediadrop     4096 Sep  5 12:06 /upload" ;;
+    esac
+    printf "sftp> "
+done
 ''')
 os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 os.environ["PATH"] = fakedir + os.pathsep + os.environ["PATH"]

@@ -461,30 +461,32 @@ class SFTPBackend(Backend):
 
     def _run_with_password(self, script, timeout):
         """
-        Drive sftp through a pseudo-terminal so it can be given a password.
+        Drive sftp interactively so it will actually ask for a password.
 
-        The batch goes in a 0600 temp file rather than on stdin, which leaves
-        stdin free to answer the prompt; the password is written to the pty
-        and never appears in the process list or in any argument.
+        Not with `-b`: that turns on batch mode, and batch mode suppresses the
+        password prompt outright — sftp goes straight to "Permission denied"
+        without ever asking. So the commands go in over the terminal after
+        authentication, exactly as a person would type them.
+
+        The password is written to the pty, so it never appears in an argument
+        or in the process list.
         """
-        fd, batch = tempfile.mkstemp(prefix=f".{APP}-batch-")
-        os.write(fd, script.encode())
-        os.close(fd)
-        os.chmod(batch, 0o600)
         master, slave = pty.openpty()
         out = b""
         transcript = []
+        proc = None
         try:
             try:
                 proc = subprocess.Popen(
-                    ["sftp", "-b", batch, *self._base_args(), self.target],
+                    ["sftp", *self._base_args(), self.target],
                     stdin=slave, stdout=slave, stderr=slave, close_fds=True,
                     preexec_fn=self._own_the_tty)
             except FileNotFoundError:
                 raise TransferError("the `sftp` command is not installed")
             os.close(slave)
             slave = None
-            answered = False
+
+            answered = sent = False
             deadline = time.monotonic() + (timeout or 86400)
             while True:
                 ready, _, _ = select.select([master], [], [], 0.5)
@@ -492,16 +494,21 @@ class SFTPBackend(Backend):
                     try:
                         chunk = os.read(master, 4096)
                     except OSError:
-                        break                        # pty hung up: child done
+                        break                    # pty hung up: child is done
                     if not chunk:
                         break
                     out += chunk
                     tail = re.split(rb"[\r\n]", out)[-1].strip()
+
                     if not answered and (self._PROMPT.search(tail)
                                          or self._PROMPT_ANY.search(chunk)):
                         os.write(master, self.password.encode() + b"\n")
                         answered = True
                         transcript.append("<password sent>")
+                    elif not sent and b"sftp>" in out:
+                        # Authenticated: it is showing its own prompt.
+                        os.write(master, (script.rstrip("\n") + "\nquit\n").encode())
+                        sent = True
                 elif proc.poll() is not None:
                     break
                 if time.monotonic() > deadline:
@@ -520,14 +527,11 @@ class SFTPBackend(Backend):
                 os.close(master)
             except OSError:
                 pass
-            try:
-                os.remove(batch)
-            except OSError:
-                pass
+            if proc and proc.poll() is None:
+                proc.kill()
 
         text = out.decode("utf-8", "replace")
-        self.transcript = transcript + [
-            ln for ln in text.splitlines() if ln.strip()]
+        self.transcript = transcript + [ln for ln in text.splitlines() if ln.strip()]
         # Drop the prompt itself and the terminal's echo of our commands.
         keep = [ln for ln in text.splitlines()
                 if not self._PROMPT.search(ln.strip().encode())]
