@@ -7,6 +7,7 @@ Two halves of one path from a disc to a Jellyfin library:
 | | |
 |---|---|
 | **`client/`** | **Foxzilla** — a dual-pane transfer client. SFTP, FTP/FTPS, S3, WebDAV, local disk. No dependencies at all. |
+| **`build/`** | macOS `.app` bundler and the icon generator. Also no dependencies. |
 | **`pickup/`** | **Foxzilla pickup** — watches the upload drop, verifies every file, hands it to the library, rescans Jellyfin. |
 
 Both are pure Python standard library. No `pip install`, no lockfile, nothing to audit but the source.
@@ -60,15 +61,35 @@ media_pickup.py --logout
 
 `--login` sends your password to Jellyfin once and keeps only the access token it returns, in a `0600` file. `--api-key` stores a Jellyfin API key instead, and `JELLYFIN_TOKEN` / `JELLYFIN_API_KEY` override both without touching disk. A legacy config containing a password is exchanged for a token on first run and the password erased.
 
-## Running
-
-Client:
+## The client
 
 ```
 python3 client/foxzilla.py
 ```
 
-Pickup, from cron:
+Two panes, a queue, and nothing else.
+
+**The queue is the priority list.** Workers always take the topmost job they are allowed to run, so dragging a row up genuinely promotes it — `⤒ Top`, `↑`, `↓`, `⤓ Bottom`, or `Alt+↑` / `Alt+↓` on a selected row. `Delete` cancels one, and the whole queue pauses and resumes.
+
+**Transfers run in parallel** up to the limit in the toolbar (default 3). Per-backend limits apply on top: FTP keeps a single control connection and stays strictly serial no matter what you set, while SFTP and the HTTP backends open independent ones.
+
+**Skip files already there** compares by size, then by hash when both ends can produce one without transferring the file — the remote side over SSH, which a locked-down sftp-only account won't allow. Where no hash is available it says so on the row rather than pretending the match was exact.
+
+**Progress and rate** come from watching the file's own size: a free local stat for downloads, one cheap `stat` over the multiplexed SSH connection for uploads. OpenSSH's own meter is not used — it draws nothing when driven programmatically, pty or not.
+
+**Interrupted transfers resume** rather than restarting, via `reget` / `reput`.
+
+### macOS
+
+```
+./build/macos/make_app.sh          # -> dist/Foxzilla.app
+```
+
+No compilation and nothing to install — the bundle is the script, an icon and a launcher. The launcher prefers the python.org or Homebrew Python, because the Command Line Tools build often ships a Tk too old to render the window properly; if it finds none with Tkinter it says so instead of failing silently.
+
+## Running the pickup
+
+From cron:
 
 ```
 */5 * * * * /usr/bin/python3 /opt/foxzilla/media_pickup.py \
@@ -76,7 +97,7 @@ Pickup, from cron:
     >> /var/log/foxzilla-pickup.log 2>&1
 ```
 
-Pickup, in Docker:
+In Docker:
 
 ```
 docker build -t foxzilla-pickup ./pickup
@@ -111,6 +132,7 @@ Linux and macOS. The client needs Python 3.9+, Tk, and the `openssh` client for 
 
 ## Known limits
 
-- SFTP shows no byte-level progress: the OpenSSH client only draws its meter to a terminal. Every other backend reports real progress.
 - S3 and WebDAV uploads buffer in memory — fine to a few hundred MB, not a way to move a disk image.
 - S3 signing is verified against an independent implementation in the tests, but has not been exercised against live AWS.
+- Skip-if-already-there falls back to a size-only comparison against servers that can't hash remotely (an sftp-only account, S3, WebDAV). The row says when it did.
+- Upload progress is sampled about twice a second, so very small files jump straight to 100%.

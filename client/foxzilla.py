@@ -27,9 +27,10 @@ import json
 import os
 import posixpath
 import queue
-import shlex
+import re
 import shutil
 import stat as statmod
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -43,7 +44,102 @@ from dataclasses import dataclass, field
 from ftplib import FTP, FTP_TLS, error_perm
 
 APP = "foxzilla"
-VERSION = "0.1"
+VERSION = "0.2"
+
+# Foxers palette - charcoal and concrete with an amber accent, taken from
+# foxers-demo.html so the tool matches the rest of the kit.
+THEME = {
+    "bg":       "#1C1E21",   # charcoal, the window ground
+    "panel":    "#2E3238",   # graphite, raised surfaces
+    "field":    "#24272B",   # input and list backgrounds
+    "text":     "#F4F4F2",   # off-white
+    "muted":    "#8A9099",
+    "line":     "#3A3F45",
+    "accent":   "#FFB020",   # amber
+    "accent_d": "#9C6500",   # pressed / borders
+    "ok":       "#2E7D4F",
+    "err":      "#B3261E",
+    "sel":      "#3A3226",   # amber-tinted selection
+}
+
+
+def apply_theme(root):
+    """
+    Paint the whole window in the Foxers palette.
+
+    Tk's default widgets ignore most styling, so this leans on ttk's 'clam'
+    theme (the one theme that honours every colour we set) and configures the
+    classic tk widgets - menus, the log Text - by hand.
+    """
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    t = THEME
+    root.configure(bg=t["bg"])
+    style.configure(".", background=t["bg"], foreground=t["text"],
+                    fieldbackground=t["field"], bordercolor=t["line"],
+                    lightcolor=t["panel"], darkcolor=t["bg"],
+                    focuscolor=t["accent"], insertcolor=t["text"])
+    style.configure("TFrame", background=t["bg"])
+    style.configure("TLabel", background=t["bg"], foreground=t["text"])
+    style.configure("Hint.TLabel", background=t["bg"], foreground=t["muted"])
+    style.configure("TCheckbutton", background=t["bg"], foreground=t["text"])
+    style.map("TCheckbutton",
+              background=[("active", t["bg"])],
+              indicatorcolor=[("selected", t["accent"])])
+    style.configure("TButton", background=t["panel"], foreground=t["text"],
+                    bordercolor=t["line"], focusthickness=1, padding=(8, 3))
+    style.map("TButton",
+              background=[("active", t["line"]), ("pressed", t["accent_d"])],
+              foreground=[("disabled", t["muted"])])
+    style.configure("Accent.TButton", background=t["accent"],
+                    foreground=t["bg"], bordercolor=t["accent_d"])
+    style.map("Accent.TButton",
+              background=[("active", "#FFC14D"), ("pressed", t["accent_d"])],
+              foreground=[("active", t["bg"])])
+    style.configure("TEntry", fieldbackground=t["field"], foreground=t["text"],
+                    bordercolor=t["line"], insertcolor=t["text"])
+    style.configure("TCombobox", fieldbackground=t["field"], background=t["panel"],
+                    foreground=t["text"], arrowcolor=t["accent"])
+    style.map("TCombobox", fieldbackground=[("readonly", t["field"])],
+              foreground=[("readonly", t["text"])])
+    root.option_add("*TCombobox*Listbox.background", t["field"])
+    root.option_add("*TCombobox*Listbox.foreground", t["text"])
+    root.option_add("*TCombobox*Listbox.selectBackground", t["accent"])
+    root.option_add("*TCombobox*Listbox.selectForeground", t["bg"])
+    style.configure("Treeview", background=t["field"], fieldbackground=t["field"],
+                    foreground=t["text"], bordercolor=t["line"], rowheight=22)
+    style.configure("Treeview.Heading", background=t["panel"],
+                    foreground=t["muted"], relief="flat", padding=(6, 4))
+    style.map("Treeview.Heading", background=[("active", t["line"])],
+              foreground=[("active", t["accent"])])
+    style.map("Treeview", background=[("selected", t["sel"])],
+              foreground=[("selected", t["accent"])])
+    style.configure("TNotebook", background=t["bg"], bordercolor=t["line"])
+    style.configure("TNotebook.Tab", background=t["panel"], foreground=t["muted"],
+                    padding=(14, 5), bordercolor=t["line"])
+    style.map("TNotebook.Tab",
+              background=[("selected", t["bg"])],
+              foreground=[("selected", t["accent"])])
+    style.configure("TPanedwindow", background=t["bg"])
+    style.configure("Sash", background=t["line"], sashthickness=5)
+    style.configure("Vertical.TScrollbar", background=t["panel"],
+                    troughcolor=t["bg"], bordercolor=t["bg"],
+                    arrowcolor=t["muted"])
+    style.configure("TSeparator", background=t["line"])
+    style.configure("Status.TLabel", background=t["panel"],
+                    foreground=t["muted"], padding=(6, 3))
+    return style
+
+
+def bar(done, total, width=12):
+    """A little text progress bar, since ttk cannot put one inside a cell."""
+    if not total:
+        return ""
+    filled = max(0, min(width, round(width * done / total)))
+    return "█" * filled + "░" * (width - filled) + f" {done * 100 // total:>3}%"
 CHUNK = 256 * 1024
 
 CONFIG_DIR = os.path.join(
@@ -84,6 +180,9 @@ class Backend:
     # True when the backend has a real local path for a file, letting us
     # hand os-level work (and fast copies) straight to the filesystem.
     is_local = False
+    # Concurrent transfers this backend tolerates. FTP keeps one control
+    # connection and must stay at 1; the rest spawn independent connections.
+    max_parallel = 4
 
     def connect(self):
         pass
@@ -117,6 +216,17 @@ class Backend:
         """Copy a real local file up to remote `path`."""
         raise NotImplementedError
 
+    def size_of(self, path: str) -> int:
+        """Size in bytes, or -1 when the path is absent or unknowable."""
+        return -1
+
+    def checksum(self, path: str) -> str | None:
+        """
+        SHA-256 of a remote file, or None when the backend cannot produce one
+        without downloading it. Used to skip files already at the destination.
+        """
+        return None
+
     # -- path helpers; posix everywhere, including on Windows remotes ------
 
     @staticmethod
@@ -133,7 +243,9 @@ class Backend:
 
 
 def _pump(src, dst, total, progress, done=0):
-    """Shovel bytes from a reader to a writer, reporting progress."""
+    """Shovel bytes from a reader to a writer, reporting progress and rate."""
+    started = time.monotonic()
+    base = done
     while True:
         buf = src.read(CHUNK)
         if not buf:
@@ -141,7 +253,8 @@ def _pump(src, dst, total, progress, done=0):
         dst.write(buf)
         done += len(buf)
         if progress:
-            progress(done, total)
+            elapsed = time.monotonic() - started
+            progress(done, total, (done - base) / elapsed if elapsed > 0.2 else 0)
     return done
 
 
@@ -204,6 +317,19 @@ class LocalBackend(Backend):
     def write_from(self, local_path, path, progress=None):
         self._copy(local_path, path, progress)
 
+    def size_of(self, path):
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return -1
+
+    def checksum(self, path):
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            while (buf := fh.read(CHUNK)):
+                h.update(buf)
+        return h.hexdigest()
+
     @staticmethod
     def _copy(a, b, progress):
         total = os.path.getsize(a)
@@ -248,7 +374,7 @@ class SFTPBackend(Backend):
     def target(self):
         return f"{self.user}@{self.host}" if self.user else self.host
 
-    def _base_args(self):
+    def _base_args(self, for_ssh=False):
         args = [
             "-o", "BatchMode=yes",
             "-o", "ControlMaster=auto",
@@ -257,7 +383,7 @@ class SFTPBackend(Backend):
             "-o", "ConnectTimeout=15",
         ]
         if self.port:
-            args += ["-P", str(self.port)]
+            args += (["-p", str(self.port)] if for_ssh else ["-P", str(self.port)])
         if self.identity:
             args += ["-i", self.identity]
         return args
@@ -366,17 +492,109 @@ class SFTPBackend(Backend):
     def rename(self, src, dst):
         self._check(self._run([f"rename {self.q(src)} {self.q(dst)}"]), "rename")
 
-    def read_to(self, path, local_path, progress=None):
-        self._check(
-            self._run([f"get {self.q(path)} {self.q(local_path)}"], timeout=None),
-            "get",
-        )
+    def _transfer(self, command, verb, total, watch, progress):
+        """
+        Run a get/put while reporting progress from the file's own size.
 
-    def write_from(self, local_path, path, progress=None):
-        self._check(
-            self._run([f"put {self.q(local_path)} {self.q(path)}"], timeout=None),
-            "put",
-        )
+        OpenSSH's progress meter is not usable here - it draws nothing even
+        with a pty on both stdin and stdout - so rather than parse a meter
+        that may or may not exist, watch the file grow. For a download that
+        is a free local stat; for an upload it is one cheap `stat` over the
+        already-multiplexed SSH connection.
+        """
+        result = {}
+
+        def run():
+            try:
+                result["out"] = self._run([command], timeout=None)
+            except Exception as e:                      # noqa: BLE001
+                result["err"] = e
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        started = time.monotonic()
+        interval = 0.4 if watch is None or total <= 0 else 0.5
+        while worker.is_alive():
+            worker.join(interval)
+            if not (progress and watch):
+                continue
+            try:
+                done = watch()
+            except Exception:                           # noqa: BLE001
+                continue
+            if done < 0:
+                continue
+            elapsed = time.monotonic() - started
+            progress(done, total, done / elapsed if elapsed > 0.5 else 0)
+
+        if "err" in result:
+            raise result["err"]
+        self._check(result.get("out", ""), verb)
+        if progress and total > 0:
+            progress(total, total, 0)
+
+    def _remote_size(self, path):
+        """One cheap stat over the shared SSH connection, -1 if unavailable."""
+        try:
+            r = subprocess.run(
+                ["ssh", *self._base_args(for_ssh=True), self.target,
+                 f"stat -c %s -- {shlex.quote(path)} 2>/dev/null || echo -1"],
+                capture_output=True, text=True, timeout=20,
+            )
+            return int((r.stdout or "-1").strip().split()[-1])
+        except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+            return -1
+
+    def read_to(self, path, local_path, progress=None, resume=False):
+        # reget continues a partial local file instead of starting over.
+        verb = "reget" if resume and os.path.exists(local_path) else "get"
+        total = self.size_of(path)
+
+        def watch():
+            try:
+                return os.path.getsize(local_path)
+            except OSError:
+                return 0
+
+        self._transfer(f"-{verb} {self.q(path)} {self.q(local_path)}",
+                       verb, total, watch, progress)
+
+    def write_from(self, local_path, path, progress=None, resume=False):
+        verb = "reput" if resume and self._remote_size(path) > 0 else "put"
+        try:
+            total = os.path.getsize(local_path)
+        except OSError:
+            total = 0
+        self._transfer(f"-{verb} {self.q(local_path)} {self.q(path)}",
+                       verb, total, lambda: self._remote_size(path), progress)
+
+    def size_of(self, path):
+        for line in self._run([f"ls -l {self.q(path)}"]).splitlines():
+            e = self._parse_ls(line.strip(), posixpath.dirname(path) or "/")
+            if e and not e.is_dir:
+                return e.size
+        return -1
+
+    def checksum(self, path):
+        """
+        Hash the file on the far side, so a skip decision costs no transfer.
+
+        Needs a shell on the remote, which a locked-down sftp-only account
+        will not have; returning None there simply falls back to a size
+        comparison rather than failing the transfer.
+        """
+        for tool, field in (("sha256sum", 0), ("shasum -a 256", 0)):
+            try:
+                r = subprocess.run(
+                    ["ssh", *self._base_args(for_ssh=True),
+                     self.target, f"{tool} -- {shlex.quote(path)}"],
+                    capture_output=True, text=True, timeout=900,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return None
+            if r.returncode == 0 and r.stdout.split():
+                return r.stdout.split()[field]
+        return None
 
     # On success sftp prints nothing but its own command echo, so anything
     # else on either stream is a failure. Whitelisting the handful of benign
@@ -431,6 +649,7 @@ def _ls_time(mon, day, timeyear):
 
 class FTPBackend(Backend):
     scheme = "ftp"
+    max_parallel = 1        # one control connection, so strictly serial
 
     def __init__(self, host, user="anonymous", password="", port=21,
                  tls=False, passive=True, label=None):
@@ -527,26 +746,33 @@ class FTPBackend(Backend):
     def read_to(self, path, local_path, progress=None):
         total = self.size(path)
         done = 0
+        started = time.monotonic()
         with open(local_path, "wb") as fh:
             def got(buf):
                 nonlocal done
                 fh.write(buf)
                 done += len(buf)
                 if progress:
-                    progress(done, total)
+                    el = time.monotonic() - started
+                    progress(done, total, done / el if el > 0.2 else 0)
             self.ftp.retrbinary(f"RETR {path}", got, blocksize=CHUNK)
 
     def write_from(self, local_path, path, progress=None):
         total = os.path.getsize(local_path)
         done = 0
+        started = time.monotonic()
         with open(local_path, "rb") as fh:
             def sending(buf):
                 nonlocal done
                 done += len(buf)
                 if progress:
-                    progress(done, total)
+                    el = time.monotonic() - started
+                    progress(done, total, done / el if el > 0.2 else 0)
             self.ftp.storbinary(f"STOR {path}", fh, blocksize=CHUNK,
                                 callback=sending)
+
+    def size_of(self, path):
+        return self.size(path)
 
     def size(self, path):
         try:
@@ -726,11 +952,11 @@ class S3Backend(Backend):
         with open(local_path, "rb") as fh:
             body = fh.read()
         if progress:
-            progress(0, len(body))
+            progress(0, len(body), 0)
         self._request("PUT", "/" + path.lstrip("/"), body=body,
                       headers={"content-length": str(len(body))})
         if progress:
-            progress(len(body), len(body))
+            progress(len(body), len(body), 0)
 
 
 def _s3_quote(path):
@@ -835,11 +1061,11 @@ class WebDAVBackend(Backend):
         with open(local_path, "rb") as fh:
             body = fh.read()
         if progress:
-            progress(0, total)
+            progress(0, total, 0)
         self._request("PUT", path, body=body,
                       headers={"Content-Type": "application/octet-stream"})
         if progress:
-            progress(total, total)
+            progress(total, total, 0)
 
 
 def _http_time(s):
@@ -953,67 +1179,219 @@ class Job:
     dst_path: str
     is_dir: bool = False
     size: int = 0
-    state: str = "queued"       # queued | running | done | failed | cancelled
+    state: str = "queued"   # queued|running|done|failed|cancelled|skipped
     done: int = 0
+    rate: float = 0.0
     error: str = ""
-    row: str = ""               # treeview iid
+    row: str = ""           # treeview iid
+    cancel: threading.Event = field(default_factory=threading.Event)
 
     @property
     def name(self):
         return posixpath.basename(self.src_path.rstrip("/")) or self.src_path
 
+    @property
+    def active(self):
+        return self.state in ("queued", "running")
+
 
 class Queue:
-    """A single worker draining a FIFO of transfers."""
+    """
+    An ordered, reorderable transfer queue drained by a pool of workers.
 
-    def __init__(self, on_change):
+    Order *is* priority: the workers always take the topmost queued job they
+    are allowed to run, so moving a row up the list genuinely promotes it.
+    Per-backend limits are respected - FTP keeps a single control connection
+    and must stay serial, while SFTP and the HTTP backends open independent
+    ones and can run several at a time.
+    """
+
+    def __init__(self, on_change, workers=8, limit=3, skip_identical=False):
         self.jobs: list[Job] = []
-        self.pending = queue.Queue()
         self.on_change = on_change
-        self.cancelled = threading.Event()
-        self.current: Job | None = None
-        self.worker = threading.Thread(target=self._run, daemon=True)
-        self.worker.start()
+        self.skip_identical = skip_identical
+        self.paused = False
+        # Ceiling on concurrent transfers overall; per-backend limits still
+        # apply on top, so FTP stays serial however high this goes.
+        self.limit = limit
+        self._lock = threading.Condition()
+        self._inflight: dict[int, int] = {}      # id(backend) -> running count
+        self._stop = False
+        for _ in range(max(1, workers)):
+            threading.Thread(target=self._worker, daemon=True).start()
+
+    # -- queue management -------------------------------------------------
 
     def add(self, job: Job):
-        self.jobs.append(job)
-        self.pending.put(job)
+        with self._lock:
+            self.jobs.append(job)
+            self._lock.notify()
         self.on_change(job)
 
-    def cancel_all(self):
-        self.cancelled.set()
-        for j in self.jobs:
-            if j.state == "queued":
-                j.state = "cancelled"
-                self.on_change(j)
+    def _insert_after(self, anchor: Job, children: list[Job]):
+        with self._lock:
+            try:
+                at = self.jobs.index(anchor) + 1
+            except ValueError:
+                at = len(self.jobs)
+            self.jobs[at:at] = children
+            self._lock.notify_all()
+        for c in children:
+            self.on_change(c)
 
-    def _run(self):
+    def move(self, job: Job, delta: int):
+        """Shift a queued job up or down; -1 is one step towards the front."""
+        with self._lock:
+            if job not in self.jobs:
+                return False
+            i = self.jobs.index(job)
+            j = max(0, min(len(self.jobs) - 1, i + delta))
+            if i == j:
+                return False
+            self.jobs.insert(j, self.jobs.pop(i))
+            self._lock.notify_all()
+        return True
+
+    def move_to(self, job: Job, index: int):
+        with self._lock:
+            if job not in self.jobs:
+                return False
+            self.jobs.remove(job)
+            self.jobs.insert(max(0, min(len(self.jobs), index)), job)
+            self._lock.notify_all()
+        return True
+
+    def cancel(self, job: Job):
+        job.cancel.set()
+        if job.state == "queued":
+            job.state = "cancelled"
+            self.on_change(job)
+
+    def cancel_all(self):
+        with self._lock:
+            targets = [j for j in self.jobs if j.active]
+        for j in targets:
+            self.cancel(j)
+
+    def set_limit(self, n: int):
+        with self._lock:
+            self.limit = max(1, int(n))
+            self._lock.notify_all()
+
+    def set_paused(self, paused: bool):
+        with self._lock:
+            self.paused = paused
+            self._lock.notify_all()
+
+    @property
+    def running(self):
+        return [j for j in self.jobs if j.state == "running"]
+
+    @property
+    def pending(self):
+        return [j for j in self.jobs if j.state == "queued"]
+
+    def idle(self):
+        return not self.running and not self.pending
+
+    # -- the pool ---------------------------------------------------------
+
+    def _claim(self):
+        """Take the highest-priority job whose backends have spare capacity."""
+        with self._lock:
+            while True:
+                if self._stop:
+                    return None
+                busy = sum(1 for j in self.jobs if j.state == "running")
+                if not self.paused and busy < self.limit:
+                    for job in self.jobs:
+                        if job.state != "queued":
+                            continue
+                        limit = min(job.src.max_parallel, job.dst.max_parallel)
+                        used = max(self._inflight.get(id(job.src), 0),
+                                   self._inflight.get(id(job.dst), 0))
+                        if used < limit:
+                            job.state = "running"
+                            for b in (job.src, job.dst):
+                                self._inflight[id(b)] = self._inflight.get(id(b), 0) + 1
+                            return job
+                self._lock.wait(0.5)
+
+    def _release(self, job):
+        with self._lock:
+            for b in (job.src, job.dst):
+                self._inflight[id(b)] = max(0, self._inflight.get(id(b), 1) - 1)
+            self._lock.notify_all()
+
+    def _worker(self):
         while True:
-            job = self.pending.get()
-            if job.state == "cancelled":
-                continue
-            self.cancelled.clear()
-            self.current = job
-            job.state = "running"
+            job = self._claim()
+            if job is None:
+                return
             self.on_change(job)
             try:
-                self._transfer(job)
-                job.state = "done"
-            except Exception as e:
-                job.state = "failed"
+                if job.cancel.is_set():
+                    job.state = "cancelled"
+                elif job.is_dir:
+                    self._expand(job)
+                    job.state = "done"
+                elif self.skip_identical and self._already_there(job):
+                    job.state = "skipped"
+                else:
+                    self._move_file(job)
+                    job.state = "done"
+            except Exception as e:                       # noqa: BLE001
+                job.state = "cancelled" if job.cancel.is_set() else "failed"
                 job.error = str(e)
-            self.current = None
+            finally:
+                self._release(job)
             self.on_change(job)
 
-    def _transfer(self, job: Job):
+    # -- the work itself --------------------------------------------------
+
+    def _expand(self, job: Job):
+        """Turn a directory into child jobs, queued right behind it."""
+        try:
+            job.dst.mkdir(job.dst_path)
+        except Exception:                                # noqa: BLE001
+            pass                                         # already there
+        children = [
+            Job(src=job.src, src_path=job.src.join(job.src_path, e.name),
+                dst=job.dst, dst_path=posixpath.join(job.dst_path, e.name),
+                is_dir=e.is_dir, size=e.size)
+            for e in job.src.listdir(job.src_path)
+        ]
+        self._insert_after(job, children)
+
+    def _already_there(self, job: Job) -> bool:
+        """
+        Is an identical file already at the destination?
+
+        Sizes must match first - that alone rejects most candidates for free.
+        Only then do we ask both sides for a hash, and only if both can
+        produce one without transferring the file. When they cannot, a size
+        match is all we have, so say so rather than pretend otherwise.
+        """
+        src_size = job.src.size_of(job.src_path)
+        dst_size = job.dst.size_of(job.dst_path)
+        if dst_size < 0 or src_size < 0 or src_size != dst_size:
+            return False
+        a = job.src.checksum(job.src_path)
+        b = job.dst.checksum(job.dst_path) if a else None
+        if a and b:
+            return a == b
+        job.error = "matched on size only (no remote hash available)"
+        return True
+
+    def _move_file(self, job: Job):
         src, dst = job.src, job.dst
 
-        if job.is_dir:
-            self._transfer_dir(job)
-            return
-
-        def progress(done, total):
-            job.done, job.size = done, total or job.size
+        def progress(done, total, rate=0.0):
+            if job.cancel.is_set():
+                raise TransferError("cancelled")
+            job.done, job.rate = done, rate
+            if total:
+                job.size = total
             self.on_change(job)
 
         if src.is_local and dst.is_local:
@@ -1023,11 +1401,9 @@ class Queue:
         elif dst.is_local:
             src.read_to(job.src_path, job.dst_path, progress)
         else:
-            # remote to remote: stage through a temp file on this machine.
-            tmp = os.path.join(
-                tempfile.gettempdir(),
-                f".{APP}-relay-{os.getpid()}-{id(job):x}",
-            )
+            # remote to remote: relay through a temp file on this machine.
+            tmp = os.path.join(tempfile.gettempdir(),
+                               f".{APP}-relay-{os.getpid()}-{id(job):x}")
             try:
                 src.read_to(job.src_path, tmp, progress)
                 dst.write_from(tmp, job.dst_path, progress)
@@ -1036,28 +1412,6 @@ class Queue:
                     os.remove(tmp)
                 except OSError:
                     pass
-
-    def _transfer_dir(self, job: Job):
-        try:
-            job.dst.mkdir(job.dst_path)
-        except Exception:
-            pass                        # already there, most likely
-        for e in job.src.listdir(job.src_path):
-            child = Job(
-                src=job.src, src_path=job.src.join(job.src_path, e.name),
-                dst=job.dst, dst_path=posixpath.join(job.dst_path, e.name),
-                is_dir=e.is_dir, size=e.size,
-            )
-            self.jobs.append(child)
-            self.on_change(child)
-            child.state = "running"
-            try:
-                self._transfer(child)
-                child.state = "done"
-            except Exception as ex:
-                child.state = "failed"
-                child.error = str(ex)
-            self.on_change(child)
 
 
 # --------------------------------------------------------------------------
@@ -1140,7 +1494,9 @@ class Pane(ttk.Frame):
         self.tree.bind("<F2>", lambda e: self.rename_selected())
         self.tree.bind("<Button-3>", self.on_menu)
 
-        self.menu = tk.Menu(self, tearoff=0)
+        self.menu = tk.Menu(self, tearoff=0, bg=THEME["panel"],
+                            fg=THEME["text"], activebackground=THEME["accent"],
+                            activeforeground=THEME["bg"], borderwidth=0)
         self.menu.add_command(label="Transfer →", command=lambda: app.transfer(self))
         self.menu.add_separator()
         self.menu.add_command(label="New folder…", command=self.new_folder)
@@ -1400,13 +1756,17 @@ class SiteDialog(tk.Toplevel):
 class App:
     def __init__(self, root):
         self.root = root
-        root.title(f"{APP} {VERSION}")
+        # Applied here rather than in main() so anything embedding App - the
+        # tests included - gets the same window instead of default grey.
+        self.style = apply_theme(root)
+        root.title(f"Foxzilla {VERSION}")
         root.geometry("1100x680")
         self.sites = load_sites()
         self.focus_pane = None
         self._ui_queue: queue.Queue = queue.Queue()
         self._pending_refresh = None
-        self.queue = Queue(self.on_job_change)
+        self._rows: dict[str, Job] = {}
+        self.queue = Queue(self.on_job_change, workers=8)
 
         self._build_menu()
 
@@ -1427,41 +1787,85 @@ class App:
                            lambda e, p=pane: setattr(self, "focus_pane", p))
 
         mid = ttk.Frame(outer)
-        mid.pack(fill="x", padx=8)
-        ttk.Button(mid, text="→  Send", width=10,
+        mid.pack(fill="x", padx=8, pady=(2, 0))
+        ttk.Button(mid, text="→  Send", width=10, style="Accent.TButton",
                    command=lambda: self.transfer(self.left)).pack(side="left")
-        ttk.Button(mid, text="←  Fetch", width=10,
+        ttk.Button(mid, text="←  Fetch", width=10, style="Accent.TButton",
                    command=lambda: self.transfer(self.right)).pack(side="left", padx=4)
+
+        self.skip_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(mid, text="Skip files already there",
+                        variable=self.skip_var,
+                        command=lambda: setattr(self.queue, "skip_identical",
+                                                self.skip_var.get())
+                        ).pack(side="left", padx=(16, 0))
+
+        ttk.Label(mid, text="parallel").pack(side="left", padx=(16, 4))
+        self.workers_var = tk.StringVar(value="3")
+        wbox = ttk.Combobox(mid, textvariable=self.workers_var, state="readonly",
+                            width=3, values=("1", "2", "3", "4", "6", "8"))
+        wbox.pack(side="left")
+        wbox.bind("<<ComboboxSelected>>",
+                  lambda e: self.queue.set_limit(self.workers_var.get()))
+
         ttk.Button(mid, text="Clear finished",
                    command=self.clear_finished).pack(side="right")
-        ttk.Button(mid, text="Cancel queue",
+        ttk.Button(mid, text="Cancel all",
                    command=self.queue.cancel_all).pack(side="right", padx=4)
+        self.pause_btn = ttk.Button(mid, text="Pause", width=8,
+                                    command=self.toggle_pause)
+        self.pause_btn.pack(side="right", padx=4)
 
-        tabs = ttk.Notebook(outer, height=170)
+        tabs = ttk.Notebook(outer, height=200)
         tabs.pack(fill="both", expand=False, padx=4, pady=4)
 
         qf = ttk.Frame(tabs)
-        cols = ("from", "to", "size", "state")
+        qbar = ttk.Frame(qf)
+        qbar.pack(side="top", fill="x", pady=(0, 2))
+        ttk.Label(qbar, text="priority").pack(side="left", padx=(2, 6))
+        for text, fn in (("⤒ Top", lambda: self.reorder("top")),
+                         ("↑", lambda: self.reorder(-1)),
+                         ("↓", lambda: self.reorder(1)),
+                         ("⤓ Bottom", lambda: self.reorder("bottom"))):
+            ttk.Button(qbar, text=text, width=8 if len(text) > 2 else 3,
+                       command=fn).pack(side="left", padx=1)
+        ttk.Button(qbar, text="Cancel", width=8,
+                   command=self.cancel_selected).pack(side="left", padx=(10, 0))
+        ttk.Label(qbar, text="  (or Alt+↑ / Alt+↓ on a row)",
+                  style="Hint.TLabel").pack(side="left")
+
+        cols = ("name", "from", "to", "size", "progress", "speed", "state")
         self.qtree = ttk.Treeview(qf, columns=cols, show="headings")
-        for c, w in zip(cols, (330, 330, 80, 140)):
+        widths = (170, 190, 190, 70, 130, 80, 110)
+        for c, w in zip(cols, widths):
             self.qtree.heading(c, text=c.capitalize())
-            self.qtree.column(c, width=w, anchor="w")
+            self.qtree.column(c, width=w, anchor="e" if c in ("size", "speed") else "w")
         qs = ttk.Scrollbar(qf, orient="vertical", command=self.qtree.yview)
         self.qtree.configure(yscrollcommand=qs.set)
         self.qtree.pack(side="left", fill="both", expand=True)
         qs.pack(side="right", fill="y")
+        self.qtree.bind("<Alt-Up>", lambda e: self.reorder(-1))
+        self.qtree.bind("<Alt-Down>", lambda e: self.reorder(1))
+        self.qtree.bind("<Delete>", lambda e: self.cancel_selected())
+        for tag, colour in (("running", THEME["accent"]), ("done", THEME["ok"]),
+                            ("failed", THEME["err"]), ("skipped", THEME["muted"]),
+                            ("cancelled", THEME["muted"])):
+            self.qtree.tag_configure(tag, foreground=colour)
         tabs.add(qf, text="Queue")
 
         lf = ttk.Frame(tabs)
         self.logbox = tk.Text(lf, height=8, wrap="none", state="disabled",
-                              font=("monospace", 9))
+                              font=("monospace", 9), relief="flat",
+                              bg=THEME["field"], fg=THEME["text"],
+                              insertbackground=THEME["text"],
+                              selectbackground=THEME["sel"])
         ls = ttk.Scrollbar(lf, orient="vertical", command=self.logbox.yview)
         self.logbox.configure(yscrollcommand=ls.set)
         self.logbox.pack(side="left", fill="both", expand=True)
         ls.pack(side="right", fill="y")
         tabs.add(lf, text="Log")
 
-        self.status = ttk.Label(root, anchor="w", relief="sunken",
+        self.status = ttk.Label(root, anchor="w", style="Status.TLabel",
                                 text=f"{APP} {VERSION} — SFTP · FTP/FTPS · S3 · WebDAV")
         self.status.pack(fill="x", side="bottom")
 
@@ -1472,8 +1876,12 @@ class App:
     # -- menu -------------------------------------------------------------
 
     def _build_menu(self):
-        bar = tk.Menu(self.root)
-        sites = tk.Menu(bar, tearoff=0)
+        menubar = tk.Menu(self.root, bg=THEME["panel"], fg=THEME["text"],
+                      activebackground=THEME["accent"],
+                      activeforeground=THEME["bg"], borderwidth=0)
+        sites = tk.Menu(menubar, tearoff=0, bg=THEME["panel"], fg=THEME["text"],
+                        activebackground=THEME["accent"],
+                        activeforeground=THEME["bg"], borderwidth=0)
         sites.add_command(label="Add site…", command=self.add_site)
         sites.add_command(label="Edit site…", command=self.edit_site)
         sites.add_command(label="Remove site", command=self.remove_site)
@@ -1481,8 +1889,8 @@ class App:
         sites.add_command(label=f"Open {SITES_FILE}", command=self.reveal_config)
         sites.add_separator()
         sites.add_command(label="Quit", command=self.quit)
-        bar.add_cascade(label="Sites", menu=sites)
-        self.root.config(menu=bar)
+        menubar.add_cascade(label="Sites", menu=sites)
+        self.root.config(menu=menubar)
 
     def reveal_config(self):
         save_sites(self.sites)
@@ -1590,35 +1998,88 @@ class App:
         self.post(self._render_job, job)
 
     def _render_job(self, job: Job):
-        state = job.state
-        if state == "running" and job.size:
-            pct = min(100, int(job.done * 100 / job.size))
-            state = f"running {pct}%"
-        elif state == "failed":
-            state = f"failed: {job.error[:60]}"
-        values = (f"{job.src.label}:{job.src_path}",
-                  f"{job.dst.label}:{job.dst_path}",
-                  human(job.size), state)
+        state, tag = job.state, job.state
+        if job.state == "running":
+            state = "transferring"
+        elif job.state == "failed":
+            state = f"failed: {job.error[:40]}"
+        elif job.state == "skipped":
+            state = "skipped (already there)"
+        elif job.state == "done" and job.is_dir:
+            state = "expanded"
+
+        values = (
+            job.name,
+            f"{job.src.label}:{posixpath.dirname(job.src_path) or '/'}",
+            f"{job.dst.label}:{posixpath.dirname(job.dst_path) or '/'}",
+            "" if job.is_dir else human(job.size),
+            "" if job.is_dir else bar(job.done, job.size),
+            f"{human(int(job.rate))}/s" if job.rate else "",
+            state,
+        )
         if job.row and self.qtree.exists(job.row):
-            self.qtree.item(job.row, values=values)
+            self.qtree.item(job.row, values=values, tags=(tag,))
         else:
-            job.row = self.qtree.insert("", "end", values=values)
+            job.row = self.qtree.insert("", "end", values=values, tags=(tag,))
+            self._rows[job.row] = job
             self.qtree.see(job.row)
-        if job.state in ("done", "failed"):
+
+        if job.state in ("done", "failed", "skipped", "cancelled"):
             if job.state == "failed":
                 self.log(f"failed {job.name}: {job.error}")
-            if not self.queue.current and not self.queue.pending.qsize():
+            elif job.state == "skipped" and job.error:
+                self.log(f"skipped {job.name} — {job.error}")
+            if self.queue.idle():
                 pane = self._pending_refresh
                 if pane:
                     pane.refresh()
                     self._pending_refresh = None
                 self.log("queue idle")
 
+    # -- priority ---------------------------------------------------------
+
+    def _selected_jobs(self):
+        return [self._rows[r] for r in self.qtree.selection() if r in self._rows]
+
+    def reorder(self, where):
+        """Shift the selected rows through the queue. Order is priority."""
+        jobs = self._selected_jobs()
+        if not jobs:
+            return
+        if where == "top":
+            for j in reversed(jobs):
+                self.queue.move_to(j, 0)
+        elif where == "bottom":
+            for j in jobs:
+                self.queue.move_to(j, len(self.queue.jobs))
+        else:
+            # moving down: walk from the bottom so they cannot collide
+            for j in (jobs if where < 0 else reversed(jobs)):
+                self.queue.move(j, where)
+        self._resync_queue_view()
+
+    def _resync_queue_view(self):
+        """Redraw queue rows in the queue's own order."""
+        for pos, job in enumerate(self.queue.jobs):
+            if job.row and self.qtree.exists(job.row):
+                self.qtree.move(job.row, "", pos)
+
+    def cancel_selected(self):
+        for job in self._selected_jobs():
+            self.queue.cancel(job)
+
+    def toggle_pause(self):
+        paused = not self.queue.paused
+        self.queue.set_paused(paused)
+        self.pause_btn.configure(text="Resume" if paused else "Pause")
+        self.log("queue paused" if paused else "queue resumed")
+
     def clear_finished(self):
         for job in list(self.queue.jobs):
-            if job.state in ("done", "cancelled") and job.row \
+            if job.state in ("done", "cancelled", "skipped") and job.row \
                     and self.qtree.exists(job.row):
                 self.qtree.delete(job.row)
+                self._rows.pop(job.row, None)
                 self.queue.jobs.remove(job)
 
     def quit(self):
@@ -1635,10 +2096,6 @@ def main():
     if not os.path.exists(SITES_FILE):
         save_sites(DEFAULT_SITES)
     root = tk.Tk()
-    try:
-        ttk.Style().theme_use("clam")
-    except tk.TclError:
-        pass
     App(root)
     root.mainloop()
 

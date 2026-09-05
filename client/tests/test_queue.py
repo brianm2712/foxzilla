@@ -10,14 +10,14 @@ if not SSH_HOST:
     raise SystemExit(0)
 
 events = []
-q = F.Queue(lambda job: events.append((job.name, job.state)))
+q = F.Queue(lambda job: events.append((job.name, job.state)), limit=3)
 
 def drain(timeout=180):
     t0 = time.time()
     while time.time() - t0 < timeout:
-        if not q.current and q.pending.empty():
-            time.sleep(0.4)
-            if not q.current and q.pending.empty():
+        if q.idle():
+            time.sleep(0.5)
+            if q.idle():
                 return True
         time.sleep(0.2)
     return False

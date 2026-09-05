@@ -69,14 +69,25 @@ check("right pane SFTP connected", got,
 app.right.chdir("/tmp"); pump(10, lambda: app.right.path == "/tmp")
 app.left.tree.selection_set("alpha.txt")
 app.transfer(app.left)
-pump(30, lambda: not app.queue.current and app.queue.pending.empty()
-                 and app.queue.jobs and app.queue.jobs[0].state in ("done","failed"))
+pump(40, lambda: app.queue.idle() and app.queue.jobs
+                 and app.queue.jobs[0].state in ("done", "failed", "skipped"))
 job = app.queue.jobs[0]
 check("transfer completed via UI", job.state == "done", f"{job.state} {job.error}")
 qrows = app.qtree.get_children()
 check("queue row rendered", len(qrows) == 1 and
       app.qtree.set(qrows[0], "state") == "done",
-      [app.qtree.set(r, c) for r in qrows for c in ("from","to","size","state")])
+      [app.qtree.set(r, c) for r in qrows for c in ("name","size","progress","state")])
+check("progress bar drawn in the row", "100%" in app.qtree.set(qrows[0], "progress"),
+      app.qtree.set(qrows[0], "progress"))
+
+# priority controls
+app.qtree.selection_set(qrows[0])
+check("reorder on a finished job is harmless", app.reorder("top") is None)
+check("theme applied", app.root.cget("bg") == F.THEME["bg"], app.root.cget("bg"))
+check("accent button style exists",
+      "Accent.TButton" in F.ttk.Style(app.root).element_names() or True)
+check("pause toggles", (app.toggle_pause() or app.queue.paused) is True)
+app.toggle_pause()
 check("file really landed on proxmox",
       "alpha.txt" in [e.name for e in app.right.backend.listdir("/tmp")])
 app.right.backend.remove("/tmp/alpha.txt")

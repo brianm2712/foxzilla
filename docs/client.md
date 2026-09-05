@@ -46,6 +46,12 @@ are **not** stored unless you deliberately write them to
 `~/.config/foxzilla/secrets.json`, which is plain JSON at 0600 — obfuscation, not
 encryption.
 
+## The queue
+
+Order is priority — the workers take the topmost job they're allowed to run. `⤒ Top`, `↑`, `↓`, `⤓ Bottom`, or `Alt+↑`/`Alt+↓` on a row; `Delete` cancels. Pause and resume affect the whole queue.
+
+Transfers run in parallel up to the toolbar limit. FTP is pinned to one at a time regardless (single control connection); other backends open independent ones.
+
 ## Using it
 
 Pick a site per pane, hit **Connect**. Double-click to descend, `↑` for the
