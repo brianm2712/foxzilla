@@ -1,0 +1,21 @@
+[
+  { "name": "Local",    "type": "local" },
+  { "name": "DVD rips", "type": "local", "path": "~/Videos/dvd-rips" },
+
+  { "name": "server",   "type": "sftp",  "host": "myserver",
+    "_comment": "a ~/.ssh/config alias: no user, port or key needed" },
+
+  { "name": "rip box",  "type": "sftp",  "host": "100.68.85.2", "user": "me",
+    "_comment": "key auth over a tailnet - collect rips from another machine" },
+
+  { "name": "drop",     "type": "sftp",  "host": "10.0.0.5", "user": "dropbox",
+    "auth": "password",
+    "_comment": "a chrooted internal-sftp upload account; prompts at connect" },
+
+  { "name": "bucket",   "type": "s3",    "bucket": "my-bucket",
+    "region": "eu-west-1", "endpoint": "https://minio.example:9000",
+    "access_key": "...", "secret_key": "..." },
+
+  { "name": "cloud",    "type": "dav",   "url": "https://host/remote.php/dav/files/me",
+    "user": "me" }
+]

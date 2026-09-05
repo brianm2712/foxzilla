@@ -389,15 +389,18 @@ class SFTPBackend(Backend):
             "-o", f"ControlPath={self._ctl}",
             "-o", "ControlPersist=120",
             "-o", "ConnectTimeout=15",
+            # Trust on first use, the same bargain a GUI client strikes when
+            # it shows a host-key dialog: an unknown host is pinned on first
+            # sight, a key that has *changed* is still refused outright. The
+            # alternative under BatchMode is a bare "Connection closed" on
+            # every first connection, which tells the user nothing.
+            "-o", "StrictHostKeyChecking=accept-new",
         ]
         if self.password:
             args += [
                 "-o", "NumberOfPasswordPrompts=1",
                 "-o", "PubkeyAuthentication=no",
                 "-o", "PreferredAuthentications=password,keyboard-interactive",
-                # accept-new pins an unknown host on first sight but still
-                # refuses a key that has *changed*, unlike StrictHostKeyChecking=no.
-                "-o", "StrictHostKeyChecking=accept-new",
             ]
         if self.port:
             args += (["-p", str(self.port)] if for_ssh else ["-P", str(self.port)])
@@ -504,9 +507,27 @@ class SFTPBackend(Backend):
         # two streams have to be read together or errors vanish silently.
         out = (proc.stdout or "") + (proc.stderr or "")
         if proc.returncode != 0 and not proc.stdout:
-            msg = out.strip().splitlines()
-            raise TransferError(msg[-1] if msg else "sftp failed")
+            raise TransferError(self._explain(out))
         return out
+
+    def _explain(self, out):
+        """Translate OpenSSH's terser failures into something actionable."""
+        low = out.lower()
+        if "remote host identification has changed" in low:
+            return (f"the host key for {self.host} has CHANGED since last time. "
+                    "This is refused. If the server was genuinely rebuilt, remove "
+                    f"its entry with: ssh-keygen -R {self.host}")
+        if "host key verification failed" in low:
+            return f"could not verify the host key for {self.host}"
+        if "permission denied" in low:
+            return (f"authentication failed for {self.target} — "
+                    "set the site's Auth field to 'password' if it wants one")
+        if "connection refused" in low:
+            return f"{self.host} refused the connection (is SSH running?)"
+        if "no route to host" in low or "could not resolve" in low:
+            return f"cannot reach {self.host}"
+        msg = [l for l in out.strip().splitlines() if l.strip()]
+        return msg[-1] if msg else "sftp failed"
 
     def connect(self):
         out = self._run(["pwd"], timeout=30, tolerant=False)

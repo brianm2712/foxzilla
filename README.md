@@ -117,6 +117,10 @@ docker exec -it foxzilla-pickup /app/docker-entrypoint.sh --login
 
 Each destination must be a single volume — staging lives inside it so the commit can be an atomic rename.
 
+Host keys are trust-on-first-use: an unknown host is pinned the first time you connect — the same bargain a GUI client strikes when it shows a host-key dialog — while a key that has *changed* is refused outright and told to you plainly. Without that, every first connection under `BatchMode` fails with a bare "Connection closed".
+
+A fuller set of site examples is in [`docs/sites.example.json`](docs/sites.example.json).
+
 ## Tests
 
 ```

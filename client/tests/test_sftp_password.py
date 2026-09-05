@@ -91,5 +91,24 @@ check("password reaches the backend", be.password == "typed-at-the-prompt")
 check("and is not stored on a key-auth site",
       F.make_backend({"type": "sftp", "host": "pve", "name": "p"}, "x").password == "")
 
+print("\nhost keys and error messages")
+E = F.SFTPBackend(host="server.example", user="me")
+check("unknown host is pinned on first use, not refused",
+      "StrictHostKeyChecking=accept-new" in E._base_args())
+check("a CHANGED host key is explained, not swallowed",
+      "CHANGED" in E._explain("REMOTE HOST IDENTIFICATION HAS CHANGED!")
+      and "ssh-keygen -R server.example" in E._explain("REMOTE HOST IDENTIFICATION HAS CHANGED!"),
+      E._explain("REMOTE HOST IDENTIFICATION HAS CHANGED!")[:70])
+check("a bare 'Connection closed' host-key failure is named",
+      "host key" in E._explain("Host key verification failed.\nConnection closed"),
+      E._explain("Host key verification failed.\nConnection closed"))
+check("permission denied suggests the password setting",
+      "password" in E._explain("Permission denied (publickey)."),
+      E._explain("Permission denied (publickey).")[:70])
+check("refused connection names the host",
+      "refused" in E._explain("ssh: connect to host x port 22: Connection refused"))
+check("unknown text falls through to the last line",
+      E._explain("something\nodd happened") == "odd happened")
+
 print(f"\n{'ALL PASS' if ok else '*** FAILURES ***'}")
 sys.exit(0 if ok else 1)
