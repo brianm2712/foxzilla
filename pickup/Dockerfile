@@ -31,7 +31,7 @@ ENV MEDIA_PICKUP_CREDENTIALS=/config/credentials.json \
     LOCK_FILE=/tmp/media_pickup.lock \
     JELLYFIN_HOST=jellyfin:8096 \
     TZ=UTC \
-    INTERVAL=300 \
+    INTERVAL=60 \
     RUN_ONCE=
 
 HEALTHCHECK --interval=5m --timeout=10s \

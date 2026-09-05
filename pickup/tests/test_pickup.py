@@ -206,6 +206,41 @@ if receipts:
     r = json.load(open(os.path.join(e.receipts, receipts[0])))
     check("receipt records the manifest", r["files"] == 1 and r["kind"] == "tv" and r["manifest"])
 
+# ---------------------------------------------------------------- trigger
+print("\ncompletion marker  (an uploader that has verified says so)")
+e = Env()
+mkfile(os.path.join(e.upload, "Marked.Show.S01E01.mkv"), 2048)
+e.run(force=False)                       # no marker: must wait, not act
+check("without a marker it waits", os.path.exists(os.path.join(e.upload, "Marked.Show.S01E01.mkv")))
+check("logged as watching", any("watching" in l or "in progress" in l for l in e.tail(4)), e.tail(2))
+
+open(MP.marker_for(e.upload, "Marked.Show.S01E01.mkv"), "w").write("done")
+e.run(force=False)                       # marker present: act immediately
+check("marker bypasses the stability wait",
+      not os.path.exists(os.path.join(e.upload, "Marked.Show.S01E01.mkv")))
+check("landed in the library", videos_under(e.shows) != [], videos_under(e.shows))
+check("said why it acted", any("marked complete by the sender" in l for l in e.tail(12)))
+check("marker cleaned up afterwards",
+      not os.path.exists(MP.marker_for(e.upload, "Marked.Show.S01E01.mkv")))
+
+print("\nmarkers are not mistaken for uploads, and stale ones are swept")
+e = Env()
+open(MP.marker_for(e.upload, "Ghost"), "w").write("done")   # item never arrived
+e.run(force=False)
+check("a lone marker is not processed as an item", videos_under(e.shows) == [])
+check("stale marker removed", not os.path.exists(MP.marker_for(e.upload, "Ghost")))
+
+print("\na marker written too early costs a failed run, never data")
+e = Env()
+mkfile(os.path.join(e.upload, "Early", "a.mkv"), 4096)
+open(MP.marker_for(e.upload, "Early"), "w").write("done")
+real = MP.reconcile
+MP.reconcile = lambda *a, **k: (_ for _ in ()).throw(MP.PickupError("verification failed"))
+e.run(force=False)
+MP.reconcile = real
+check("source survives a premature marker", os.path.exists(os.path.join(e.upload, "Early", "a.mkv")))
+check("failure reported", any("FAILED, source left intact" in l for l in e.tail(6)))
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]

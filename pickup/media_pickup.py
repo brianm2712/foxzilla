@@ -80,6 +80,32 @@ VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".m2ts"}
 PARTIAL_EXTS = {".filepart", ".part", ".crdownload", ".!qb", ".tmp", ".partial"}
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
 
+# An uploader that knows it has finished can say so by dropping a marker
+# beside the item: ".<name>.complete". That replaces the stability guess with
+# a fact, and is the difference between acting in seconds and waiting out two
+# poll intervals plus a quiet period.
+COMPLETE_SUFFIX = ".complete"
+
+
+def marker_for(upload_dir: str, name: str) -> str:
+    return os.path.join(upload_dir, f".{name}{COMPLETE_SUFFIX}")
+
+
+def sweep_markers(upload_dir: str, entries) -> None:
+    """Remove markers whose item is no longer here; they are just litter."""
+    try:
+        listing = os.listdir(upload_dir)
+    except OSError:
+        return
+    for f in listing:
+        if not (f.startswith(".") and f.endswith(COMPLETE_SUFFIX)):
+            continue
+        if f[1:-len(COMPLETE_SUFFIX)] not in entries:
+            try:
+                os.remove(os.path.join(upload_dir, f))
+            except OSError:
+                pass
+
 EPISODE_PATTERNS = [
     re.compile(r"S\d{1,2}[\s._-]?E\d{1,3}", re.IGNORECASE),
     re.compile(r"\b\d{1,2}x\d{2}\b"),
@@ -835,6 +861,9 @@ def main(argv=None):
         entries = [e for e in sorted(os.listdir(cfg["upload_dir"]))
                    if not e.startswith(".") and not is_junk(e)]
         if not entries:
+            # Still tidy up: a marker whose item never arrived, or was already
+            # dealt with, would otherwise sit there indefinitely.
+            sweep_markers(cfg["upload_dir"], entries)
             return 0
 
         state = load_state(cfg["state_file"])
@@ -845,17 +874,26 @@ def main(argv=None):
             now = observe(path)
             prev = state.get(name, {})
 
-            if now["partial"]:
+            marker = marker_for(cfg["upload_dir"], name)
+            declared = os.path.exists(marker)
+
+            if now["partial"] and not declared:
                 log(f"watching {name}: transfer still in progress (partial files)")
                 state[name] = {"shape": now["shape"], "stable": 0}
                 continue
-            if time.time() - now["newest"] < QUIET_SECONDS and not args.force:
+            if declared:
+                # The uploader has verified this item and said so. Trusting
+                # that is safe: the manifest is rebuilt and every file is
+                # hashed again before anything is deleted, so a marker written
+                # too early costs a failed run, never data.
+                log(f"{name}: upload marked complete by the sender")
+            elif time.time() - now["newest"] < QUIET_SECONDS and not args.force:
                 log(f"watching {name}: written to in the last {QUIET_SECONDS}s")
                 state[name] = {"shape": now["shape"], "stable": 0}
                 continue
 
             stable = prev.get("stable", 0) + 1 if prev.get("shape") == now["shape"] else 0
-            if stable < STABLE_POLLS and not args.force:
+            if stable < STABLE_POLLS and not args.force and not declared:
                 log(f"watching {name}: {now['files']} files, {human(now['bytes'])} "
                     f"(stable {stable}/{STABLE_POLLS})")
                 state[name] = {"shape": now["shape"], "stable": stable}
@@ -866,6 +904,11 @@ def main(argv=None):
                 dests = process_item(cfg, name, log, dry_run=args.dry_run)
                 processed.extend(dests)
                 state.pop(name, None)
+                if not args.dry_run:
+                    try:
+                        os.remove(marker)
+                    except OSError:
+                        pass
             except PickupError as e:
                 log(f"  FAILED, source left intact: {e}", "ERROR")
                 state[name] = {"shape": now["shape"], "stable": 0,
@@ -879,6 +922,7 @@ def main(argv=None):
         for name in list(state):
             if name not in entries:
                 state.pop(name)
+        sweep_markers(cfg["upload_dir"], entries)
         save_state(cfg["state_file"], state)
 
         if processed and not args.dry_run:

@@ -185,6 +185,10 @@ class Backend:
     # Concurrent transfers this backend tolerates. FTP keeps one control
     # connection and must stay at 1; the rest spawn independent connections.
     max_parallel = 4
+    # Set on sites that feed a watcher: once a transfer here is complete and
+    # verified we drop a marker beside it, so the far side can act at once
+    # instead of waiting out its own "has this stopped changing yet" guess.
+    signal_complete = False
 
     def connect(self):
         pass
@@ -1276,27 +1280,37 @@ def needs_password(site):
     return kind in ("ftp", "ftps", "dav", "webdav") and not site.get("anonymous")
 
 
+COMPLETE_SUFFIX = ".complete"
+
+
+def marker_path(directory: str, name: str) -> str:
+    """Where the completion marker for `name` lives. Mirrors the watcher."""
+    return posixpath.join(directory, f".{name}{COMPLETE_SUFFIX}")
+
+
 def make_backend(site, password=""):
+    """Build the backend a site describes, ready to connect."""
     kind = site.get("type", "local")
     name = site.get("name")
+
     if kind == "local":
-        return LocalBackend(label=name or "Local", start=site.get("path"))
-    if kind == "sftp":
-        return SFTPBackend(
+        backend = LocalBackend(label=name or "Local", start=site.get("path"))
+    elif kind == "sftp":
+        backend = SFTPBackend(
             host=site["host"], user=site.get("user"), port=site.get("port"),
             identity=site.get("identity"), label=name,
             password=password if site.get("auth") == "password" else "",
             start=site.get("path"),
         )
-    if kind in ("ftp", "ftps"):
-        return FTPBackend(
+    elif kind in ("ftp", "ftps"):
+        backend = FTPBackend(
             host=site["host"], user=site.get("user") or "anonymous",
             password=password, port=site.get("port", 21),
             tls=(kind == "ftps" or bool(site.get("tls"))),
             passive=site.get("passive", True), label=name,
         )
-    if kind == "s3":
-        return S3Backend(
+    elif kind == "s3":
+        backend = S3Backend(
             bucket=site["bucket"],
             access_key=site.get("access_key") or os.environ.get("AWS_ACCESS_KEY_ID", ""),
             secret_key=site.get("secret_key") or os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
@@ -1305,10 +1319,16 @@ def make_backend(site, password=""):
             session_token=site.get("session_token") or os.environ.get("AWS_SESSION_TOKEN"),
             label=name,
         )
-    if kind in ("dav", "webdav"):
-        return WebDAVBackend(url=site["url"], user=site.get("user", ""),
-                             password=password, label=name)
-    raise TransferError(f"unknown site type: {kind!r}")
+    elif kind in ("dav", "webdav"):
+        backend = WebDAVBackend(url=site["url"], user=site.get("user", ""),
+                                password=password, label=name)
+    else:
+        raise TransferError(f"unknown site type: {kind!r}")
+
+    # Sites that feed a watcher get a completion marker written once a
+    # transfer here is finished and verified.
+    backend.signal_complete = bool(site.get("drop"))
+    return backend
 
 
 # --------------------------------------------------------------------------
@@ -2111,6 +2131,7 @@ class App:
         self._ui_queue: queue.Queue = queue.Queue()
         self._pending_refresh = None
         self._rows: dict[str, Job] = {}
+        self._pending_markers: list[tuple[Backend, str]] = []
         self.queue = Queue(self.on_job_change, workers=8)
 
         self._build_menu()
@@ -2348,6 +2369,8 @@ class App:
         pairs = [(src.join(src_pane.path, e.name),
                   posixpath.join(dst_pane.path, e.name), e.is_dir) for e in sel]
 
+        self._arm_markers(dst, dst_pane.path, [e.name for e in sel])
+
         if not self.scan_var.get():
             for (sp, dp, isdir), e in zip(pairs, sel):
                 self.queue.add(Job(src=src, src_path=sp, dst=dst, dst_path=dp,
@@ -2464,7 +2487,54 @@ class App:
                 if pane:
                     pane.refresh()
                     self._pending_refresh = None
+                self._signal_complete()
                 self.log("queue idle")
+
+    # -- completion signal ------------------------------------------------
+
+    def _arm_markers(self, dst, directory, names):
+        """Remember to tell a drop folder when these items are safely there."""
+        if not getattr(dst, "signal_complete", False):
+            return
+        for name in names:
+            self._pending_markers.append((dst, marker_path(directory, name)))
+
+    def _signal_complete(self):
+        """
+        Drop a marker beside each finished item, so the far side can act now.
+
+        Only once the queue has drained with nothing failed - a marker means
+        "this is complete and verified", and writing one after a partial
+        transfer would be worse than not writing one at all. The watcher
+        re-hashes everything regardless, so the marker saves time, it does not
+        replace the check.
+        """
+        pending, self._pending_markers = self._pending_markers, []
+        if not pending:
+            return
+        if any(j.state == "failed" for j in self.queue.jobs):
+            self.log("not signalling completion — some transfers failed")
+            return
+
+        def work():
+            fd, tmp = tempfile.mkstemp(prefix=f".{APP}-marker-")
+            os.write(fd, f"verified by {APP} {VERSION}\n".encode())
+            os.close(fd)
+            try:
+                for backend, path in pending:
+                    backend.write_from(tmp, path)
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            return len(pending)
+
+        self.run_async(
+            work,
+            lambda n: self.log(f"signalled {n} completed upload(s) — "
+                               "the watcher can pick them up immediately"),
+            lambda e: self.log(f"could not signal completion: {e}"))
 
     # -- priority ---------------------------------------------------------
 

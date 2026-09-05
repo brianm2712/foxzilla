@@ -24,6 +24,14 @@ The previous pickup script lost episodes and duplicated files. Three causes, all
 
 Nothing is deleted until the destination has been proven correct.
 
+### The completion signal
+
+The watcher cannot tell an upload that has *finished* from one that has merely *paused*, so on its own it guesses: it waits for an item to look unchanged across two polls plus a quiet period. That costs minutes on every arrival.
+
+An uploader that has verified its own transfer can say so instead, by dropping `.<name>.complete` beside the item. The watcher then acts on the next pass rather than waiting out the guess. Foxzilla writes one automatically for any site marked `"drop": true`, and only once the queue has drained with nothing failed.
+
+The marker is a shortcut, not a substitute: the manifest is still rebuilt and every file hashed again before anything is deleted. A marker written too early costs a failed run, never data — which is covered by a test.
+
 ```
 Phase 1  MANIFEST   walk the incoming item; record every file's relative path,
                     size and SHA-256. This is the contract for what must
