@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import errno
+import fcntl
 import hashlib
 import hmac
 import io
@@ -35,6 +36,7 @@ import stat as statmod
 import shlex
 import subprocess
 import sys
+import termios
 import tempfile
 import threading
 import time
@@ -431,6 +433,27 @@ class SFTPBackend(Backend):
         """Quote a path for the sftp command language."""
         return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
+    @staticmethod
+    def _own_the_tty():
+        """
+        Run in the child between fork and exec: make the pty its *controlling*
+        terminal, not merely its stdin.
+
+        OpenSSH opens /dev/tty to ask for a password. On Linux it falls back to
+        stdin when there is no controlling terminal, which is why this worked
+        without it; macOS does not, so the prompt never appeared, the password
+        was never sent, and the server saw a client that disconnected during
+        authentication.
+        """
+        try:
+            os.setsid()
+        except OSError:
+            pass                                 # already a session leader
+        try:
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        except OSError:
+            pass                                 # best effort; stdin still works
+
     _PROMPT = re.compile(rb"(?i)(password|passcode|verification code)\s*:\s*\Z")
     # The prompt arrives with no trailing newline and servers word it
     # differently, so also match it anywhere in the chunk just read.
@@ -455,7 +478,8 @@ class SFTPBackend(Backend):
             try:
                 proc = subprocess.Popen(
                     ["sftp", "-b", batch, *self._base_args(), self.target],
-                    stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+                    stdin=slave, stdout=slave, stderr=slave, close_fds=True,
+                    preexec_fn=self._own_the_tty)
             except FileNotFoundError:
                 raise TransferError("the `sftp` command is not installed")
             os.close(slave)

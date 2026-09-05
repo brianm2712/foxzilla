@@ -91,6 +91,40 @@ check("password reaches the backend", be.password == "typed-at-the-prompt")
 check("and is not stored on a key-auth site",
       F.make_backend({"type": "sftp", "host": "pve", "name": "p"}, "x").password == "")
 
+print("\nthe child gets a controlling terminal, not just a pty on stdin")
+# This is the bug macOS exposed: OpenSSH opens /dev/tty to prompt for a
+# password. A pty on stdin is not enough — it has to be the child's
+# *controlling* terminal. Linux falls back to stdin and hid this; macOS does
+# not, so the prompt never appeared and the password was never sent.
+import pty as _pty, subprocess as _sp
+
+def child_sees_a_tty(with_fix):
+    master, slave = _pty.openpty()
+    kw = {"preexec_fn": F.SFTPBackend._own_the_tty} if with_fix else {}
+    p = _sp.Popen([sys.executable, "-c",
+                   "import os\n"
+                   "try:\n"
+                   "    fd = os.open('/dev/tty', os.O_RDWR); os.close(fd); print('TTY')\n"
+                   "except OSError:\n"
+                   "    print('NONE')"],
+                  stdin=slave, stdout=slave, stderr=slave, close_fds=True, **kw)
+    os.close(slave)
+    out = b""
+    while True:
+        try:
+            chunk = os.read(master, 1024)
+        except OSError:
+            break
+        if not chunk:
+            break
+        out += chunk
+    os.close(master); p.wait()
+    return b"TTY" in out
+
+check("with the fix, the child can open /dev/tty", child_sees_a_tty(True))
+check("_own_the_tty survives being called twice (already a session leader)",
+      (F.SFTPBackend._own_the_tty() or True))
+
 print("\nstart folder")
 deep = {"name": "drop", "type": "sftp", "host": "h", "user": "u",
         "path": "/mnt/incoming/upload"}
