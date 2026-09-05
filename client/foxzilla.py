@@ -1559,6 +1559,117 @@ class Queue:
 
 
 # --------------------------------------------------------------------------
+# pre-flight scan
+# --------------------------------------------------------------------------
+
+CLEAR, IDENTICAL, SAME_SIZE, CONFLICT = "clear", "identical", "same size", "conflict"
+
+
+@dataclass
+class PlanItem:
+    src_path: str
+    dst_path: str
+    size: int
+    verdict: str
+    is_dir: bool = False
+
+    @property
+    def name(self):
+        return posixpath.basename(self.src_path.rstrip("/")) or self.src_path
+
+    @property
+    def exists(self):
+        return self.verdict != CLEAR
+
+
+def compare_paths(src: Backend, src_path: str, dst: Backend, dst_path: str,
+                  dst_size: int | None = None) -> str:
+    """
+    Decide whether a file is already at the destination.
+
+    Size is checked first because it is nearly free and settles most cases.
+    Only if the sizes match do we ask both ends for a hash, and only when both
+    can produce one without transferring the file. Where they cannot - a
+    chrooted account with no shell, S3, WebDAV - the honest answer is "same
+    size", not "identical", and the caller is told which it got.
+
+    `dst_size` may be passed in when the caller already listed the destination
+    directory, which avoids a per-file round trip.
+    """
+    if dst_size is None:
+        dst_size = dst.size_of(dst_path)
+    if dst_size < 0:
+        return CLEAR
+    src_size = src.size_of(src_path)
+    if src_size < 0 or src_size != dst_size:
+        return CONFLICT
+    a = src.checksum(src_path)
+    b = dst.checksum(dst_path) if a else None
+    if a and b:
+        return IDENTICAL if a == b else CONFLICT
+    return SAME_SIZE
+
+
+def plan_transfer(src: Backend, src_path: str, dst: Backend, dst_path: str,
+                  is_dir: bool, note=None, cancelled=None) -> list[PlanItem]:
+    """
+    Walk what is about to be sent and check each file against the destination.
+
+    Directories are expanded here rather than at transfer time so the user is
+    shown the real picture - "3 of 40 already there" - before anything moves.
+
+    The destination is listed once per directory rather than stat'ed once per
+    file: over SFTP each stat is a separate process, so a forty-file folder
+    went from about forty round trips to one.
+    """
+    out: list[PlanItem] = []
+    stack = [(src_path, dst_path, is_dir)]
+    scanned = 0
+    while stack:
+        if cancelled is not None and cancelled.is_set():
+            break
+        sp, dp, isdir = stack.pop()
+
+        if not isdir:
+            out.append(PlanItem(sp, dp, src.size_of(sp),
+                                compare_paths(src, sp, dst, dp)))
+            continue
+
+        out.append(PlanItem(sp, dp, 0, CLEAR, is_dir=True))
+        try:
+            entries = src.listdir(sp)
+        except Exception:                            # noqa: BLE001
+            continue
+        try:
+            known = {e.name: e.size for e in dst.listdir(dp) if not e.is_dir}
+        except Exception:                            # noqa: BLE001
+            known = {}                               # destination absent: all new
+        for e in entries:
+            if e.is_dir:
+                stack.append((src.join(sp, e.name), posixpath.join(dp, e.name), True))
+                continue
+            scanned += 1
+            if note:
+                note(scanned, e.name)
+            child_dst = posixpath.join(dp, e.name)
+            out.append(PlanItem(
+                src.join(sp, e.name), child_dst, e.size,
+                compare_paths(src, src.join(sp, e.name), dst, child_dst,
+                              dst_size=known.get(e.name, -1))))
+    return out
+
+
+def summarise(plan: list[PlanItem]) -> dict:
+    files = [p for p in plan if not p.is_dir]
+    counts = {v: sum(1 for p in files if p.verdict == v)
+              for v in (CLEAR, IDENTICAL, SAME_SIZE, CONFLICT)}
+    counts["files"] = len(files)
+    counts["bytes"] = sum(p.size for p in files)
+    counts["new_bytes"] = sum(p.size for p in files if p.verdict == CLEAR)
+    return counts
+
+
+# --------------------------------------------------------------------------
 # formatting helpers
 # --------------------------------------------------------------------------
 
@@ -1819,6 +1930,93 @@ class Pane(ttk.Frame):
         self.app.run_async(work, lambda _: self.refresh(), self.fail)
 
 
+class ScanDialog(tk.Toplevel):
+    """
+    What the destination already has, and what to do about it.
+
+    Only shown when the scan finds something - a clean upload should not need
+    a click. The choice defaults to skipping what is already there, because
+    that is almost always what was meant and it is the only option that
+    cannot lose anything.
+    """
+
+    def __init__(self, parent, plan, dst_label):
+        super().__init__(parent)
+        self.title("Already at the destination")
+        self.transient(parent)
+        self.configure(bg=THEME["bg"])
+        self.choice = None
+        counts = summarise(plan)
+
+        head = ttk.Frame(self, padding=(14, 12, 14, 6))
+        head.pack(fill="x")
+        existing = counts[IDENTICAL] + counts[SAME_SIZE] + counts[CONFLICT]
+        ttk.Label(head, font=("", 11, "bold"),
+                  text=f"{existing} of {counts['files']} files are already on "
+                       f"{dst_label}").pack(anchor="w")
+
+        bits = []
+        if counts[IDENTICAL]:
+            bits.append(f"{counts[IDENTICAL]} identical (verified by hash)")
+        if counts[SAME_SIZE]:
+            bits.append(f"{counts[SAME_SIZE]} the same size "
+                        "(no remote hash available, so not certain)")
+        if counts[CONFLICT]:
+            bits.append(f"{counts[CONFLICT]} same name but different content")
+        if counts[CLEAR]:
+            bits.append(f"{counts[CLEAR]} new — {human(counts['new_bytes'])}")
+        ttk.Label(head, style="Hint.TLabel", justify="left",
+                  text="\n".join(bits)).pack(anchor="w", pady=(4, 0))
+
+        body = ttk.Frame(self, padding=(14, 0))
+        body.pack(fill="both", expand=True)
+        cols = ("file", "size", "status")
+        tree = ttk.Treeview(body, columns=cols, show="headings", height=10)
+        for c, w in zip(cols, (330, 80, 210)):
+            tree.heading(c, text=c.capitalize())
+            tree.column(c, width=w, anchor="e" if c == "size" else "w")
+        for tag, colour in ((CLEAR, THEME["ok"]), (IDENTICAL, THEME["muted"]),
+                            (SAME_SIZE, THEME["accent"]), (CONFLICT, THEME["err"])):
+            tree.tag_configure(tag, foreground=colour)
+        label = {CLEAR: "new", IDENTICAL: "identical — skip",
+                 SAME_SIZE: "same size, unverified", CONFLICT: "differs — would overwrite"}
+        # Existing files first: they are the reason this dialog is open.
+        for item in sorted((p for p in plan if not p.is_dir),
+                           key=lambda p: (p.verdict == CLEAR, p.name.lower())):
+            tree.insert("", "end", values=(item.name, human(item.size),
+                                           label[item.verdict]),
+                        tags=(item.verdict,))
+        sb = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        opts = ttk.Frame(self, padding=(14, 10))
+        opts.pack(fill="x")
+        self.mode = tk.StringVar(value="skip")
+        for value, text in (
+            ("skip", "Upload only what is new — skip everything already there"),
+            ("replace", "Upload new files, and overwrite the ones that differ"),
+            ("all", "Upload everything, overwriting whatever is there"),
+        ):
+            ttk.Radiobutton(opts, text=text, value=value,
+                            variable=self.mode).pack(anchor="w", pady=1)
+
+        btns = ttk.Frame(self, padding=(14, 0, 14, 12))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(btns, text="Transfer", style="Accent.TButton",
+                   command=self._go).pack(side="right", padx=6)
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.grab_set()
+        self.wait_window(self)
+
+    def _go(self):
+        self.choice = self.mode.get()
+        self.destroy()
+
+
 class SiteDialog(tk.Toplevel):
     """Add or edit a saved site. Fields shown depend on the protocol."""
 
@@ -1940,12 +2138,9 @@ class App:
         ttk.Button(mid, text="←  Fetch", width=10, style="Accent.TButton",
                    command=lambda: self.transfer(self.right)).pack(side="left", padx=4)
 
-        self.skip_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(mid, text="Skip files already there",
-                        variable=self.skip_var,
-                        command=lambda: setattr(self.queue, "skip_identical",
-                                                self.skip_var.get())
-                        ).pack(side="left", padx=(16, 0))
+        self.scan_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(mid, text="Scan destination first",
+                        variable=self.scan_var).pack(side="left", padx=(16, 0))
 
         ttk.Label(mid, text="parallel").pack(side="left", padx=(16, 4))
         self.workers_var = tk.StringVar(value="3")
@@ -2148,17 +2343,85 @@ class App:
         if not sel:
             messagebox.showinfo(APP, "Nothing selected.")
             return
-        for e in sel:
-            self.queue.add(Job(
-                src=src_pane.backend,
-                src_path=src_pane.backend.join(src_pane.path, e.name),
-                dst=dst_pane.backend,
-                dst_path=posixpath.join(dst_pane.path, e.name),
-                is_dir=e.is_dir,
-                size=e.size,
-            ))
-        self.log(f"queued {len(sel)} item(s) → {dst_pane.backend.label}")
-        self._pending_refresh = dst_pane
+
+        src, dst = src_pane.backend, dst_pane.backend
+        pairs = [(src.join(src_pane.path, e.name),
+                  posixpath.join(dst_pane.path, e.name), e.is_dir) for e in sel]
+
+        if not self.scan_var.get():
+            for (sp, dp, isdir), e in zip(pairs, sel):
+                self.queue.add(Job(src=src, src_path=sp, dst=dst, dst_path=dp,
+                                   is_dir=isdir, size=e.size))
+            self.log(f"queued {len(sel)} item(s) → {dst.label}")
+            self._pending_refresh = dst_pane
+            return
+
+        self.log(f"scanning {dst.label} for what is already there…")
+
+        def work():
+            plan = []
+            for sp, dp, isdir in pairs:
+                plan += plan_transfer(
+                    src, sp, dst, dp, isdir,
+                    note=lambda n, path: self.post(
+                        lambda p=path, n=n: self.log(f"scanned {n} — {posixpath.basename(p)}")
+                        if n and n % 25 == 0 else None))
+            return plan
+
+        def ready(plan):
+            counts = summarise(plan)
+            if not counts["files"]:
+                self.log("nothing to transfer")
+                return
+            already = counts[IDENTICAL] + counts[SAME_SIZE] + counts[CONFLICT]
+            if not already:
+                self.log(f"scan: all {counts['files']} file(s) are new "
+                         f"({human(counts['bytes'])}) — transferring")
+                self._queue_plan(plan, "all", src, dst_pane)
+                return
+            dialog = ScanDialog(self.root, plan, dst.label)
+            if dialog.choice:
+                self._queue_plan(plan, dialog.choice, src, dst_pane)
+            else:
+                self.log("transfer cancelled")
+
+        self.run_async(work, ready,
+                       lambda e: self.log(f"scan failed: {e}"))
+
+    WANTED = {"skip": {CLEAR},
+              "replace": {CLEAR, CONFLICT},
+              "all": {CLEAR, IDENTICAL, SAME_SIZE, CONFLICT}}
+
+    def _queue_plan(self, plan, mode, src, dst_pane):
+        """Create the folders the chosen files need, then queue the files."""
+        wanted = self.WANTED[mode]
+        files = [p for p in plan if not p.is_dir and p.verdict in wanted]
+        dirs = [p for p in plan if p.is_dir]
+        skipped = sum(1 for p in plan if not p.is_dir and p.verdict not in wanted)
+
+        if not files:
+            self.log(f"nothing to do — all {skipped} file(s) already there")
+            return
+
+        def make_dirs():
+            for d in dirs:
+                try:
+                    d.dst_path and dst_pane.backend.mkdir(d.dst_path)
+                except Exception:                    # noqa: BLE001
+                    pass                             # already exists
+            return files
+
+        def queue_them(items):
+            for item in items:
+                self.queue.add(Job(src=src, src_path=item.src_path,
+                                   dst=dst_pane.backend, dst_path=item.dst_path,
+                                   size=item.size))
+            self.log(f"queued {len(items)} file(s) → {dst_pane.backend.label}"
+                     + (f", skipped {skipped} already there" if skipped else ""))
+            self._pending_refresh = dst_pane
+
+        self.run_async(make_dirs, queue_them,
+                       lambda e: self.log(f"could not prepare folders: {e}"))
 
     def on_job_change(self, job: Job):
         # Called from the transfer worker; bounce onto the UI thread.

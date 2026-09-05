@@ -73,7 +73,11 @@ Two panes, a queue, and nothing else.
 
 **Transfers run in parallel** up to the limit in the toolbar (default 3). Per-backend limits apply on top: FTP keeps a single control connection and stays strictly serial no matter what you set, while SFTP and the HTTP backends open independent ones.
 
-**Skip files already there** compares by size, then by hash when both ends can produce one without transferring the file — the remote side over SSH, which a locked-down sftp-only account won't allow. Where no hash is available it says so on the row rather than pretending the match was exact.
+**The destination is scanned before anything moves.** If everything is new it just transfers — no dialog for a clean upload. If some of it is already there you get told what, and choose: upload only what's new, overwrite the ones that differ, or overwrite everything.
+
+The comparison is size first, since that is nearly free and settles most cases, then a hash from both ends — but only when both can produce one without transferring the file. A chrooted sftp account has no shell, and S3 and WebDAV cannot hash on demand, so there the honest verdict is **"same size"**, not "identical", and it says so rather than pretending the match was exact. A file that is the same size but different content is caught as a conflict, which a size-only check would have waved through.
+
+Each destination directory is listed once rather than stat'ed per file. Over SFTP every stat is a separate process, so a forty-file folder scans in about 0.2s instead of 16.
 
 **Progress and rate** come from watching the file's own size: a free local stat for downloads, one cheap `stat` over the multiplexed SSH connection for uploads. OpenSSH's own meter is not used — it draws nothing when driven programmatically, pty or not.
 

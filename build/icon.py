@@ -81,16 +81,49 @@ def _fox(u, v, size=512):
     return None
 
 
+def _cap(u, v, ax, ay, bx, by, r):
+    """Distance test for a capsule: a thick segment with rounded ends."""
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((u - ax) * dx + (v - ay) * dy) / L2))
+    cx, cy = ax + t * dx, ay + t * dy
+    return (u - cx) ** 2 + (v - cy) ** 2 <= r * r
+
+
+def _arrow(u, v, sign, shaft_y):
+    """
+    One arrow pointing along `sign`.
+
+    The shaft is a capsule rather than a bare rectangle so the tail is rounded
+    and the whole mark reads as drawn rather than as clipped boxes, and the
+    head is a triangle whose base overlaps the shaft so the join is seamless.
+    """
+    t = u * sign                       # distance along the direction of travel
+    w = v - shaft_y
+    if _cap(t, w, -0.26, 0.0, 0.06, 0.0, 0.052):
+        return True                    # shaft
+    tip, base, half = 0.30, 0.03, 0.145
+    if base <= t <= tip and abs(w) <= half * (tip - t) / (tip - base):
+        return True                    # head
+    return False
+
+
+SHADOW = (0x0E, 0x0F, 0x11)            # a touch darker than the ground
+GAP = 0.155                            # vertical offset of each arrow
+
+
 def _arrows(u, v, size=512):
-    """The original mark: amber going out, concrete coming back."""
+    """Amber going out, concrete coming back."""
     for sign, colour in ((1, FG), (-1, CONCRETE)):
-        shaft_y = -0.14 * sign
-        t = u * sign
-        off = abs(v - shaft_y)
-        if -0.30 <= t <= 0.08 and off < 0.05:
+        if _arrow(u, v, sign, -GAP * sign):
             return colour
-        if 0.08 <= t <= 0.30 and off < 0.145 * (0.30 - t) / 0.22:
-            return colour
+    # A single-pixel shadow beneath each arrow, which reads as depth at large
+    # sizes and simply vanishes at small ones.
+    if size >= 64:
+        off = 0.012
+        for sign in (1, -1):
+            if _arrow(u, v - off, sign, -GAP * sign):
+                return SHADOW
     return None
 
 
