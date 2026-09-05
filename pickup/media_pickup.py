@@ -811,7 +811,9 @@ def main(argv=None):
     args = ap.parse_args(argv)
     cfg = build_config(args)
 
-    if args.login:
+    # --api-key is a credential action in its own right; requiring --login
+    # alongside it meant it silently fell through to a normal watcher run.
+    if args.login or args.api_key:
         return cmd_login(cfg["jellyfin_host"], args.login_user, args.api_key)
     if args.logout:
         return cmd_logout()

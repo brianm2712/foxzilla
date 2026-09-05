@@ -49,6 +49,16 @@ MP.cmd_login("host:8096", api_key="abc123")
 check("api key stored", json.load(open(MP.CRED_FILE)).get("api_key") == "abc123")
 check("api key needs no password", "password" not in json.load(open(MP.CRED_FILE)))
 
+print("\n--api-key works on its own, without --login")
+MP.cmd_logout()
+rc = MP.main(["--api-key", "standalone-key", "--upload-dir", tempfile.mkdtemp(),
+              "--log-file", os.path.join(tempfile.mkdtemp(), "l.log")])
+check("main() handles --api-key alone", rc == 0, f"rc={rc}")
+check("key actually stored",
+      os.path.exists(MP.CRED_FILE) and
+      json.load(open(MP.CRED_FILE)).get("api_key") == "standalone-key",
+      json.load(open(MP.CRED_FILE)) if os.path.exists(MP.CRED_FILE) else "no file")
+
 print("\nenvironment overrides never touch disk")
 MP.cmd_logout()
 os.environ["JELLYFIN_TOKEN"] = "env-token"
