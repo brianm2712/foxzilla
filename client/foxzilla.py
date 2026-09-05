@@ -26,7 +26,9 @@ import io
 import json
 import os
 import posixpath
+import pty
 import queue
+import select
 import re
 import shutil
 import stat as statmod
@@ -355,11 +357,16 @@ class SFTPBackend(Backend):
 
     scheme = "sftp"
 
-    def __init__(self, host, user=None, port=None, label=None, identity=None):
+    def __init__(self, host, user=None, port=None, label=None, identity=None,
+                 password=""):
         self.host = host
         self.user = user or ""
         self.port = port
         self.identity = identity
+        # When set, authentication happens over a pty because OpenSSH will
+        # only read a password from a terminal - never from a pipe, and never
+        # under BatchMode.
+        self.password = password or ""
         self.label = label or f"sftp://{user + '@' if user else ''}{host}"
         # Kept short deliberately: macOS caps unix socket paths at ~104 bytes,
         # and this one has the host and port appended by ssh at connect time.
@@ -376,12 +383,22 @@ class SFTPBackend(Backend):
 
     def _base_args(self, for_ssh=False):
         args = [
-            "-o", "BatchMode=yes",
+            # BatchMode must be off for a password prompt to happen at all.
+            "-o", "BatchMode=no" if self.password else "BatchMode=yes",
             "-o", "ControlMaster=auto",
             "-o", f"ControlPath={self._ctl}",
             "-o", "ControlPersist=120",
             "-o", "ConnectTimeout=15",
         ]
+        if self.password:
+            args += [
+                "-o", "NumberOfPasswordPrompts=1",
+                "-o", "PubkeyAuthentication=no",
+                "-o", "PreferredAuthentications=password,keyboard-interactive",
+                # accept-new pins an unknown host on first sight but still
+                # refuses a key that has *changed*, unlike StrictHostKeyChecking=no.
+                "-o", "StrictHostKeyChecking=accept-new",
+            ]
         if self.port:
             args += (["-p", str(self.port)] if for_ssh else ["-P", str(self.port)])
         if self.identity:
@@ -393,13 +410,83 @@ class SFTPBackend(Backend):
         """Quote a path for the sftp command language."""
         return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
+    _PROMPT = re.compile(rb"(?i)(password|passcode|verification code)\s*:\s*$")
+
+    def _run_with_password(self, script, timeout):
+        """
+        Drive sftp through a pseudo-terminal so it can be given a password.
+
+        The batch goes in a 0600 temp file rather than on stdin, which leaves
+        stdin free to answer the prompt; the password is written to the pty
+        and never appears in the process list or in any argument.
+        """
+        fd, batch = tempfile.mkstemp(prefix=f".{APP}-batch-")
+        os.write(fd, script.encode())
+        os.close(fd)
+        os.chmod(batch, 0o600)
+        master, slave = pty.openpty()
+        out = b""
+        try:
+            try:
+                proc = subprocess.Popen(
+                    ["sftp", "-b", batch, *self._base_args(), self.target],
+                    stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+            except FileNotFoundError:
+                raise TransferError("the `sftp` command is not installed")
+            os.close(slave)
+            slave = None
+            answered = False
+            deadline = time.monotonic() + (timeout or 86400)
+            while True:
+                ready, _, _ = select.select([master], [], [], 0.5)
+                if ready:
+                    try:
+                        chunk = os.read(master, 4096)
+                    except OSError:
+                        break                        # pty hung up: child done
+                    if not chunk:
+                        break
+                    out += chunk
+                    tail = out.rsplit(b"\n", 1)[-1].strip()
+                    if not answered and self._PROMPT.search(tail):
+                        os.write(master, self.password.encode() + b"\n")
+                        answered = True
+                elif proc.poll() is not None:
+                    break
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    raise TransferError("sftp timed out")
+            proc.wait()
+        finally:
+            if slave is not None:
+                os.close(slave)
+            try:
+                os.close(master)
+            except OSError:
+                pass
+            try:
+                os.remove(batch)
+            except OSError:
+                pass
+
+        text = out.decode("utf-8", "replace")
+        # Drop the prompt itself and the terminal's echo of our commands.
+        keep = [ln for ln in text.splitlines()
+                if not self._PROMPT.search(ln.strip().encode())]
+        joined = "\n".join(keep)
+        if "Permission denied" in joined or "Authentication failed" in joined:
+            raise TransferError(f"authentication failed for {self.target}")
+        return joined
+
     def _run(self, commands, timeout=120, tolerant=True):
-        """Run a batch of sftp commands, returning stdout."""
+        """Run a batch of sftp commands, returning its output."""
         if tolerant:
             # A leading '-' tells sftp to keep going past a failing command,
             # so one missing file cannot abort the whole batch.
             commands = [c if c.startswith("-") else "-" + c for c in commands]
         script = "\n".join(commands) + "\n"
+        if self.password:
+            return self._run_with_password(script, timeout)
         try:
             proc = subprocess.run(
                 ["sftp", "-b", "-", *self._base_args(), self.target],
@@ -535,6 +622,10 @@ class SFTPBackend(Backend):
 
     def _remote_size(self, path):
         """One cheap stat over the shared SSH connection, -1 if unavailable."""
+        if self.password:
+            # A password-auth or chrooted account usually has no shell, and a
+            # second ssh here would sit on a prompt. Fall back to sftp's ls.
+            return self.size_of(path)
         try:
             r = subprocess.run(
                 ["ssh", *self._base_args(for_ssh=True), self.target,
@@ -579,10 +670,15 @@ class SFTPBackend(Backend):
         """
         Hash the file on the far side, so a skip decision costs no transfer.
 
+        Requires a shell, so it is skipped entirely for password/chrooted
+        accounts (`internal-sftp` has no shell to run sha256sum in).
+
         Needs a shell on the remote, which a locked-down sftp-only account
         will not have; returning None there simply falls back to a size
         comparison rather than failing the transfer.
         """
+        if self.password:
+            return None
         for tool, field in (("sha256sum", 0), ("shasum -a 256", 0)):
             try:
                 r = subprocess.run(
@@ -1131,7 +1227,12 @@ def save_secret(name, value):
 
 
 def needs_password(site):
-    return site.get("type") in ("ftp", "dav") and not site.get("anonymous")
+    """Sites we must ask for a password before connecting."""
+    kind = site.get("type")
+    if kind == "sftp":
+        # SFTP defaults to key auth; only ask when the site says otherwise.
+        return site.get("auth") == "password"
+    return kind in ("ftp", "ftps", "dav", "webdav") and not site.get("anonymous")
 
 
 def make_backend(site, password=""):
@@ -1143,6 +1244,7 @@ def make_backend(site, password=""):
         return SFTPBackend(
             host=site["host"], user=site.get("user"), port=site.get("port"),
             identity=site.get("identity"), label=name,
+            password=password if site.get("auth") == "password" else "",
         )
     if kind in ("ftp", "ftps"):
         return FTPBackend(
@@ -1681,7 +1783,8 @@ class SiteDialog(tk.Toplevel):
     FIELDS = {
         "local": [("path", "Start folder (blank = home)")],
         "sftp": [("host", "Host or ~/.ssh/config alias"), ("user", "User"),
-                 ("port", "Port (22)"), ("identity", "Key file (optional)")],
+                 ("port", "Port (22)"), ("identity", "Key file (optional)"),
+                 ("auth", "Auth: key (default) or password")],
         "ftp": [("host", "Host"), ("user", "User"), ("port", "Port (21)")],
         "ftps": [("host", "Host"), ("user", "User"), ("port", "Port (21)")],
         "s3": [("bucket", "Bucket"), ("region", "Region"),
