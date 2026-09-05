@@ -79,6 +79,8 @@ Two panes, a queue, and nothing else.
 
 **Interrupted transfers resume** rather than restarting, via `reget` / `reput`.
 
+**A site can pin the folder it opens in.** Set `"path"` on an SFTP site and it lands there instead of the account's home — a deep drop folder becomes one click rather than five. Local sites already worked this way.
+
 **SFTP does password auth as well as keys.** Key auth is the default; set `"auth": "password"` on a site and you're prompted at connect. OpenSSH will only take a password from a terminal — never a pipe, and never under `BatchMode` — so those sessions run under a pty, with the batch in a `0600` temp file so stdin stays free for the prompt. The password never appears in an argument or in the process list. Chrooted `internal-sftp` accounts have no shell, so remote hashing and `stat` are skipped for them automatically rather than hanging on a prompt.
 
 ### macOS

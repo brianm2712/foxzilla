@@ -91,6 +91,16 @@ check("password reaches the backend", be.password == "typed-at-the-prompt")
 check("and is not stored on a key-auth site",
       F.make_backend({"type": "sftp", "host": "pve", "name": "p"}, "x").password == "")
 
+print("\nstart folder")
+deep = {"name": "drop", "type": "sftp", "host": "h", "user": "u",
+        "path": "/mnt/incoming/upload"}
+b = F.make_backend(deep)
+check("a site can pin the folder it opens in", b.home() == "/mnt/incoming/upload",
+      b.home())
+plain = F.make_backend({"name": "p", "type": "sftp", "host": "h"})
+check("without one, the server's own home is used",
+      plain.start is None and plain.home() == "/", plain.home())
+
 print("\nhost keys and error messages")
 E = F.SFTPBackend(host="server.example", user="me")
 check("unknown host is pinned on first use, not refused",

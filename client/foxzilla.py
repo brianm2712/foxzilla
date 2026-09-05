@@ -358,11 +358,14 @@ class SFTPBackend(Backend):
     scheme = "sftp"
 
     def __init__(self, host, user=None, port=None, label=None, identity=None,
-                 password=""):
+                 password="", start=None):
         self.host = host
         self.user = user or ""
         self.port = port
         self.identity = identity
+        # A site can pin the directory it opens in, which is how a deep drop
+        # folder becomes one click rather than five.
+        self.start = start
         # When set, authentication happens over a pty because OpenSSH will
         # only read a password from a terminal - never from a pipe, and never
         # under BatchMode.
@@ -561,7 +564,7 @@ class SFTPBackend(Backend):
         )
 
     def home(self):
-        return self._home or "/"
+        return self.start or self._home or "/"
 
     # -- operations -------------------------------------------------------
 
@@ -1283,6 +1286,7 @@ def make_backend(site, password=""):
             host=site["host"], user=site.get("user"), port=site.get("port"),
             identity=site.get("identity"), label=name,
             password=password if site.get("auth") == "password" else "",
+            start=site.get("path"),
         )
     if kind in ("ftp", "ftps"):
         return FTPBackend(
@@ -1822,7 +1826,8 @@ class SiteDialog(tk.Toplevel):
         "local": [("path", "Start folder (blank = home)")],
         "sftp": [("host", "Host or ~/.ssh/config alias"), ("user", "User"),
                  ("port", "Port (22)"), ("identity", "Key file (optional)"),
-                 ("auth", "Auth: key (default) or password")],
+                 ("auth", "Auth: key (default) or password"),
+                 ("path", "Start folder (optional)")],
         "ftp": [("host", "Host"), ("user", "User"), ("port", "Port (21)")],
         "ftps": [("host", "Host"), ("user", "User"), ("port", "Port (21)")],
         "s3": [("bucket", "Bucket"), ("region", "Region"),
