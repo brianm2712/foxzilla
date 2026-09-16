@@ -6,9 +6,9 @@
   {
     "name": "DVD rips (barabus)",
     "type": "sftp",
-    "host": "100.68.85.2",
+    "host": "100.80.39.113",
     "user": "barabus",
-    "_comment": "collect MakeMKV rips from ~/Videos/dvd-rips; key auth, talos is already authorised"
+    "_comment": "collect MakeMKV rips from ~/Videos/dvd-rips; key auth, talos re-authorised after the 2026-09 rebuild. New tailnet node: the pre-rebuild address 100.68.85.2 is dead."
   },
   {
     "name": "mediadrop",
