@@ -2653,6 +2653,20 @@ class App:
         self.root.destroy()
 
 
+def find_sites(sites, name):
+    """
+    Sites a name from the command line could mean, ignoring case.
+
+    An exact name wins outright; otherwise any site whose name contains it,
+    so `--check mediadrop` finds "mediadrop (proxmox)" without the quoting.
+    """
+    want = name.strip().lower()
+    exact = [x for x in sites if x["name"].lower() == want]
+    if exact or not want:
+        return exact
+    return [x for x in sites if want in x["name"].lower()]
+
+
 def check_site(name):
     """
     Connect to one site from the terminal and report what happened.
@@ -2666,11 +2680,16 @@ def check_site(name):
     import getpass
 
     sites = load_sites()
-    site = next((x for x in sites if x["name"].lower() == name.lower()), None)
-    if not site:
-        print(f"No site called {name!r}. Known: "
+    matches = find_sites(sites, name)
+    if not matches:
+        print(f"No site matches {name!r}. Known: "
               + ", ".join(x["name"] for x in sites))
         return 1
+    if len(matches) > 1:
+        print(f"{name!r} matches more than one site - be more specific: "
+              + ", ".join(x["name"] for x in matches))
+        return 1
+    site = matches[0]
 
     print(f"site      : {site['name']}  ({site.get('type')})")
     for k in ("host", "user", "port", "auth", "url", "bucket", "path"):

@@ -142,7 +142,7 @@ python3 client/foxzilla.py --list
 python3 client/foxzilla.py --check mediadrop
 ```
 
-`--check` connects to one site from the terminal and prints the actual dialogue with the server, password redacted, plus the home directory and its first few entries. A GUI can only say "it didn't connect"; this shows where it stopped — no prompt appeared, authentication refused, connected but the listing was empty.
+`--check` takes any unambiguous part of a site name, case-insensitive, and connects to that one site from the terminal and prints the actual dialogue with the server, password redacted, plus the home directory and its first few entries. A GUI can only say "it didn't connect"; this shows where it stopped — no prompt appeared, authentication refused, connected but the listing was empty.
 
 ## Tests
 
