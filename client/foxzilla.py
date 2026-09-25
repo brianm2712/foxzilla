@@ -266,6 +266,21 @@ def _pump(src, dst, total, progress, done=0):
     return done
 
 
+def clean_typed_path(text):
+    """
+    A path as typed or pasted into the path bar, minus the shell quoting that
+    would otherwise make it "not found": surrounding whitespace, one pair of
+    matching quotes, and backslash escapes like `SEAGATE\\ EXP`.
+
+    Only a backslash before punctuation or a space is an escape, so a
+    Windows-style `C:\\Users` on an FTP server comes through untouched.
+    """
+    p = text.strip()
+    if len(p) >= 2 and p[0] == p[-1] and p[0] in "'\"":
+        return p[1:-1]
+    return re.sub(r"\\([^A-Za-z0-9])", r"\1", p)
+
+
 # --------------------------------------------------------------------------
 # local disk
 # --------------------------------------------------------------------------
@@ -284,6 +299,13 @@ class LocalBackend(Backend):
         if self.start and os.path.isdir(self.start):
             return self.start
         return os.path.expanduser("~")
+
+    def start_missing(self):
+        """The pinned start folder, if there is one and it isn't there -
+        typically a removable drive that isn't mounted yet."""
+        if self.start and not os.path.isdir(self.start):
+            return self.start
+        return None
 
     def listdir(self, path):
         out = []
@@ -1806,7 +1828,7 @@ class Pane(ttk.Frame):
         self.path_var = tk.StringVar()
         pe = ttk.Entry(nav, textvariable=self.path_var)
         pe.pack(side="left", fill="x", expand=True, padx=4)
-        pe.bind("<Return>", lambda e: self.chdir(self.path_var.get()))
+        pe.bind("<Return>", lambda e: self.go_typed())
 
         cols = ("size", "modified")
         self.tree = ttk.Treeview(self, columns=cols, selectmode="extended")
@@ -1883,6 +1905,16 @@ class Pane(ttk.Frame):
             self.backend = backend
             self.app.log(f"connected: {backend.label}")
             self.chdir(backend.home())
+            missing = backend.is_local and backend.start_missing()
+            if missing:
+                self.app.log(f"[{name}] start folder not found: {missing}"
+                             " - opened home instead")
+                messagebox.showwarning(
+                    "Folder not found",
+                    f"{name}'s folder isn't there:\n\n{missing}\n\n"
+                    "If it's on an external drive, mount the drive and "
+                    "Connect again. Showing your home folder for now.",
+                    parent=self.app.root)
 
         self.app.run_async(work, ok, self.fail)
 
@@ -1905,6 +1937,12 @@ class Pane(ttk.Frame):
             self.render()
 
         self.app.run_async(work, ok, self.fail)
+
+    def go_typed(self):
+        path = clean_typed_path(self.path_var.get())
+        if self.backend and self.backend.is_local:
+            path = os.path.expanduser(path)
+        self.chdir(path)
 
     def go_up(self):
         if self.backend:
