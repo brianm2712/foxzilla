@@ -191,6 +191,62 @@ MP.sha256_file = real_sha
 check("hash mismatch aborts the handoff", os.path.exists(os.path.join(e.upload, "Bitrot", "film.mkv")))
 check("mismatch reported", any("verification failed" in l or "FAILED" in l for l in e.tail(6)))
 
+# ---------------------------------------------------------------- bug 10
+print("\nbug_10_movie_disc_with_extras_filed_as_tv  (v2: 5+ videos -> TV, whatever their sizes)")
+MB = 1024 * 1024
+# Real MakeMKV rips, sizes in MB. Every one has a feature plus 4+ extras.
+MOVIE_DISCS = {
+    "Batman Year One": [3140, 427, 295, 324, 336, 49, 51, 59],
+    "Batman Under the Red Hood": [3584, 409, 337, 340, 79],
+    "Batman Mystery of the Batwoman": [3321, 215, 322, 348, 78],
+    "Renfield": [5325, 522, 84, 103, 120, 97, 85, 103, 120, 366, 182, 157, 181, 105, 140, 3],
+    "A Knights Tale": [3994, 419, 116, 68, 100, 80, 137, 59, 76,
+                       70, 90, 110, 85, 95, 120, 105, 88, 92, 99],
+}
+for title, mbs in MOVIE_DISCS.items():
+    paths = [f"B{i}_t{i:02d}.mkv" for i in range(len(mbs))]
+    kind, why = MP.classify(title, paths, {p: m * MB for p, m in zip(paths, mbs)})
+    check(f"{title}: movie", kind == "movie", why)
+
+# A season is near-equal episodes; its "play all" title is the sum of the rest,
+# so even that stays at about half the video.
+episodes = [f"B{i}_t{i:02d}.mkv" for i in range(6)]
+kind, why = MP.classify("Some Show", episodes, {p: 700 * MB for p in episodes})
+check("equal-sized season stays TV", kind == "tv", why)
+play_all = episodes + ["A1_t06.mkv"]
+sizes = {p: 700 * MB for p in episodes}
+sizes["A1_t06.mkv"] = 6 * 700 * MB
+kind, why = MP.classify("Some Show", play_all, sizes)
+check("season with a play-all title stays TV", kind == "tv", why)
+kind, why = MP.classify("S01", ["Show S01E01.mkv"] * 1 + ["x.mkv"], {"Show S01E01.mkv": 9 * MB, "x.mkv": 1})
+check("an episode marker still wins over size", kind == "tv", why)
+
+e = Env()
+rip = os.path.join(e.upload, "Renfield")
+for i, kb in enumerate(MOVIE_DISCS["Renfield"]):
+    mkfile(os.path.join(rip, f"D1_t{i:02d}.mkv"), kb * 10)
+e.run()
+check("end to end: lands in movies", len(videos_under(e.movies)) == 16 and not videos_under(e.shows),
+      f"movies={len(videos_under(e.movies))} shows={len(videos_under(e.shows))}")
+check("feature promoted, extras kept",
+      os.path.exists(os.path.join(e.movies, "Renfield", "Renfield.mkv"))
+      and len(os.listdir(os.path.join(e.movies, "Renfield", "extras"))) == 15)
+check("handoff completes (source removed)", not os.path.exists(rip), e.tail(1))
+
+# ---------------------------------------------------------------- bug 11
+print("\nbug_11_movie_with_extras_fails_reconciliation  (v2: renamed feature looked missing)")
+e = Env()
+film = os.path.join(e.upload, "Ned Kelly")
+for n, kb in [("A1_t00.mkv", 600), ("B1_t01.mkv", 60), ("D2_t02.mkv", 11)]:
+    mkfile(os.path.join(film, n), kb * 100)
+e.run()
+check("reconciles all 3 files", any("reconciled 3/3" in l for l in e.tail(6)), e.tail(3))
+check("source removed only after success", not os.path.exists(film))
+check("feature and extras in place",
+      sorted(videos_under(os.path.join(e.movies, "Ned Kelly"))) ==
+      ["Ned Kelly.mkv", os.path.join("extras", "B1_t01.mkv"), os.path.join("extras", "D2_t02.mkv")],
+      videos_under(e.movies))
+
 # ---------------------------------------------------------------- extras
 print("\nreceipts, dry-run and single files")
 e = Env()

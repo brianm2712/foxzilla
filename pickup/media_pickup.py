@@ -119,6 +119,12 @@ SEASON_NAME_PATTERN = re.compile(r"\b(season|series)[\s._-]?\d{1,2}\b", re.IGNOR
 MIN_FEATURE_BYTES = 200 * 1024 * 1024
 FEATURE_RATIO = 0.4
 
+# A DVD rip whose largest video holds more than this share of all the video
+# bytes is a film plus its extras, however many extras there are. Real movie
+# discs measured 66-78%; a TV season's episodes are near-equal, and even a
+# "play all" title only reaches about half, since it is the sum of the rest.
+FEATURE_SHARE = 0.6
+
 CHUNK = 4 * 1024 * 1024
 STABLE_POLLS = 2          # consecutive unchanged observations before we act
 QUIET_SECONDS = 60        # a file touched more recently than this is not quiet
@@ -258,7 +264,7 @@ def human(n):
 # classification
 # --------------------------------------------------------------------------
 
-def classify(name, rel_paths):
+def classify(name, rel_paths, sizes=None):
     """
     Decide movie vs TV.
 
@@ -267,6 +273,9 @@ def classify(name, rel_paths):
     deleted every file below its "large file" threshold. Structure is checked
     here too, and the classifier is only ever allowed to be wrong in a way
     that is recoverable.
+
+    `sizes` maps each rel path to its byte size. Without it, a movie disc
+    ripped with five or more extras is indistinguishable from a season.
     """
     haystack = " ".join([name] + rel_paths)
     if any(p.search(haystack) for p in EPISODE_PATTERNS):
@@ -277,6 +286,11 @@ def classify(name, rel_paths):
     if any(SEASON_DIR_PATTERN.match(d) for d in top_dirs):
         return "tv", "season subdirectory"
     vids = [p for p in rel_paths if os.path.splitext(p)[1].lower() in VIDEO_EXTS]
+    if sizes and len(vids) >= 2:
+        total = sum(sizes.get(v, 0) for v in vids)
+        biggest = max(sizes.get(v, 0) for v in vids)
+        if total and biggest / total > FEATURE_SHARE:
+            return "movie", f"one feature holds {biggest * 100 // total}% of the video"
     if len(vids) >= 5:
         # Many similarly-sized videos with no movie structure is far more
         # likely a ripped season than a film with 5+ full-length extras.
@@ -371,14 +385,21 @@ def video_files(root):
             if os.path.splitext(rel)[1].lower() in VIDEO_EXTS]
 
 
-def organize_movie_staging(staging, title, log):
+def organize_movie_staging(staging, title, log, renames=None):
     """
     Tidy a movie inside staging: promote the main feature, push the rest into
     extras/. Multi-movie packs are split into sibling folders.
 
     Unlike v1 this never deletes anything: whatever is not claimed by a movie
     goes to _leftovers/ for a human to look at.
+
+    Every file moved is recorded in `renames` as
+    {staged rel path: (target title, rel path inside that target)}, so
+    reconciliation can follow it. Without that, a renamed feature looks
+    missing and every movie with extras fails its own handoff.
     """
+    if renames is None:
+        renames = {}
     vids = video_files(staging)
     if len(vids) <= 1:
         return {title: staging}
@@ -399,6 +420,7 @@ def organize_movie_staging(staging, title, log):
             folder = os.path.join(holding, movie_title)
             os.makedirs(folder, exist_ok=True)
             os.rename(os.path.join(staging, v), os.path.join(folder, os.path.basename(v)))
+            renames[v] = (movie_title, os.path.basename(v))
             splits[movie_title] = folder
         # Everything not claimed by a feature is kept, not deleted.
         remaining = walk_files(staging)
@@ -408,6 +430,7 @@ def organize_movie_staging(staging, title, log):
                 target = os.path.join(leftovers, rel)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 os.rename(full, target)
+                renames[rel] = (f"_leftovers/{title}", rel)
             log(f"  kept {len(remaining)} unclaimed file(s) in _leftovers/{title}")
             splits[f"_leftovers/{title}"] = leftovers
         shutil.rmtree(staging, ignore_errors=True)   # now genuinely empty
@@ -418,6 +441,7 @@ def organize_movie_staging(staging, title, log):
     wanted = f"{title}{ext}"
     if feature != wanted:
         os.replace(os.path.join(staging, feature), os.path.join(staging, wanted))
+        renames[feature] = (title, wanted)
     extras = os.path.join(staging, "extras")
     os.makedirs(extras, exist_ok=True)
     moved = 0
@@ -426,6 +450,7 @@ def organize_movie_staging(staging, title, log):
         if not os.path.exists(src) or os.path.dirname(v) == "extras":
             continue
         os.replace(src, os.path.join(extras, os.path.basename(v)))
+        renames[v] = (title, os.path.join("extras", os.path.basename(v)))
         moved += 1
     log(f"  organized movie: feature={wanted}, {moved} extra(s)")
     return {title: staging}
@@ -728,7 +753,8 @@ def process_item(cfg, name, log, dry_run=False):
         raise PickupError("item contains no usable files")
 
     rel_paths = [f["path"] for f in manifest["files"]]
-    kind, why = classify(name, rel_paths)
+    sizes = {f["path"]: f["size"] for f in manifest["files"]}
+    kind, why = classify(name, rel_paths, sizes)
     log(f"  classified as {kind.upper()} ({why})")
 
     if kind == "tv":
@@ -744,20 +770,25 @@ def process_item(cfg, name, log, dry_run=False):
     staging = os.path.join(staging_base, f"{os.getpid()}-{int(started)}")
 
     placements, skipped, conflicts = {}, [], []
+    renames = {}
     try:
         stage(src, manifest, staging, log, dry_run=dry_run)
 
         if kind == "movie" and not dry_run:
-            targets = organize_movie_staging(staging, title, log)
+            targets = organize_movie_staging(staging, title, log, renames)
         else:
             targets = {title: staging}
 
+        # commit() reports paths inside each target; map them back to the
+        # manifest's paths, which is what reconcile() checks against.
+        back = {where: rel for rel, where in renames.items()}
         for target_title, staged_path in targets.items():
             dest = os.path.join(dest_root, target_title)
             p, s, c = commit(staged_path, dest, quarantine, log, dry_run=dry_run)
-            placements.update(p)
-            skipped.extend(s)
-            conflicts.extend(c)
+            orig = lambda rel: back.get((target_title, rel), rel)
+            placements.update((orig(rel), target) for rel, target in p.items())
+            skipped.extend(orig(rel) for rel in s)
+            conflicts.extend((orig(rel), q) for rel, q in c)
 
         if not dry_run:
             reconcile(manifest, placements, skipped, conflicts, log)
