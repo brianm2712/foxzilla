@@ -69,6 +69,7 @@ DEFAULTS = {
         "media_pickup.lock"),
     "receipts_dir": "/data/receipts",
     "jellyfin_host": "jellyfin:8096",
+    "park_dir": "",        # where .removed-YYYYMMDD/ goes; empty = the upload dir
 }
 
 # Credentials are resolved at runtime (env, then a 0600 config file) so that no
@@ -865,6 +866,101 @@ def remux_title(iso, title_no, out_path):
         raise PickupError("ffmpeg produced no output")
 
 
+NAME_SUFFIX = ".name"         # "<disc>.iso.name": one line, the item name to use
+CONVERTING_DIR = ".converting"
+PARK_PREFIX = ".removed-"
+
+
+def name_file_for(iso_path):
+    return iso_path + NAME_SUFFIX
+
+
+def park_dir_today(cfg):
+    base = cfg.get("park_dir") or cfg["upload_dir"]
+    return os.path.join(base, PARK_PREFIX + time.strftime("%Y%m%d"))
+
+
+def park(path, park_root):
+    """Rename into the park dir (same filesystem). Never copies, never deletes."""
+    os.makedirs(park_root, exist_ok=True)
+    dest = os.path.join(park_root, os.path.basename(path))
+    n = 1
+    while os.path.exists(dest):
+        n += 1
+        dest = os.path.join(park_root, f"{os.path.basename(path)}.{n}")
+    try:
+        os.rename(path, dest)
+    except OSError as e:
+        raise PickupError(f"could not park {os.path.basename(path)} in {park_root}: {e}")
+    return dest
+
+
+def disc_item_name(cfg, iso, log):
+    """From the .name file if present, else the label plus Jellyfin's year."""
+    try:
+        with open(name_file_for(iso)) as fh:
+            for line in fh:
+                if line.strip():
+                    return line.strip(), "from .name file"
+    except OSError:
+        pass
+    title = title_from_label(read_iso_label(iso))
+    if not title:
+        raise PickupError("disc has no volume label and no .name file")
+    try:
+        creds = load_credentials(cfg["jellyfin_host"], log)
+        match = jf_movie_lookup(cfg["jellyfin_host"], creds, title, log)
+    except Exception as e:
+        match = None
+        log(f"  could not look up the year for '{title}': {e}", "WARN")
+    if not match:
+        log(f"  no year found for '{title}' - filing it by label; identify it in Jellyfin", "WARN")
+        return movie_item_name(title, None), "label only"
+    return movie_item_name(*match), f"label + Jellyfin: {match[0]} ({match[1]})"
+
+
+def convert_disc_image(cfg, name, log):
+    """
+    Remux a DVD image in the inbox into an MKV item the handoff will file.
+
+    The MKV is written under .converting/ and renamed into the inbox whole, so
+    a tick never sees a half-written item; then the ISO (and its .name file)
+    is renamed into the park dir. Nothing is deleted. Returns the item name.
+    """
+    iso = os.path.join(cfg["upload_dir"], name)
+    started = time.time()
+    park_root = park_dir_today(cfg)
+    park_base = os.path.dirname(park_root)
+    if not os.path.isdir(park_base) or not same_filesystem(cfg["upload_dir"], park_base):
+        raise PickupError(f"park dir {park_base} is missing or not on the inbox filesystem")
+    item, why = disc_item_name(cfg, iso, log)
+    final = os.path.join(cfg["upload_dir"], item)
+    if os.path.exists(final):
+        raise PickupError(f"converted item already in the inbox: {item}")
+    found = probe_titles(iso)
+    best = longest_title(found)
+    if not best:
+        raise PickupError("no readable DVD titles on the disc")
+    log(f"  title {best[0]} of {len(found)} ({best[1] / 60:.1f} min) -> {item}/{item}.mkv ({why})")
+    work = os.path.join(cfg["upload_dir"], CONVERTING_DIR, item)
+    shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(work)
+    try:
+        remux_title(iso, best[0], os.path.join(work, item + ".mkv"))
+    except Exception:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+    os.rename(work, final)
+    with open(marker_for(cfg["upload_dir"], item), "w") as fh:
+        fh.write(f"converted from {name}\n")
+    parked = park(iso, park_root)
+    if os.path.exists(name_file_for(iso)):
+        park(name_file_for(iso), park_root)
+    prune_empty(os.path.join(cfg["upload_dir"], CONVERTING_DIR))
+    log(f"  -> converted in {time.time() - started:.0f}s; {name} parked at {parked}")
+    return item
+
+
 # --------------------------------------------------------------------------
 # processing one item
 # --------------------------------------------------------------------------
@@ -1041,7 +1137,8 @@ def main(argv=None):
 
     try:
         entries = [e for e in sorted(os.listdir(cfg["upload_dir"]))
-                   if not e.startswith(".") and not is_junk(e)]
+                   if not e.startswith(".") and not is_junk(e)
+                   and not e.endswith(NAME_SUFFIX)]
         if not entries:
             # Still tidy up: a marker whose item never arrived, or was already
             # dealt with, would otherwise sit there indefinitely.
@@ -1060,16 +1157,30 @@ def main(argv=None):
             declared = os.path.exists(marker)
 
             imgs = [p for p in now["shape"] if os.path.splitext(p)[1].lower() in DISC_IMAGE_EXTS]
-            if imgs:
-                # A DVD/Blu-ray rip as an image. Filing it would only hide it:
-                # Jellyfin ignores .iso. Leave it where the uploader can see it
-                # and say so once, not every tick.
+            convertible = bool(imgs) and os.path.isfile(path) and ffmpeg_available()
+            if imgs and not convertible:
+                # A disc image we cannot remux here. Filing it would only hide
+                # it: Jellyfin ignores .iso. Leave it where the uploader can
+                # see it and say so once, not every tick.
+                why = ("ffmpeg is not installed" if os.path.isfile(path)
+                       else "put the .iso at the top level of the inbox to have it remuxed")
                 if prev.get("held") != "disc image":
                     more = f" +{len(imgs) - 1} more" if len(imgs) > 1 else ""
                     log(f"holding {name}: disc image ({imgs[0]}{more}) - Jellyfin cannot play "
-                        f"disc images; convert to MKV and it will be picked up", "WARN")
+                        f"disc images; convert to MKV and it will be picked up ({why})", "WARN")
                 state[name] = {"shape": now["shape"], "stable": 0, "held": "disc image"}
                 continue
+            if convertible:
+                # The .name file is part of the disc's shape, so dropping one
+                # beside a disc that failed to convert is the change that earns
+                # another attempt. An unchanged failed disc is left alone.
+                nf = name_file_for(path)
+                if os.path.exists(nf):
+                    st = os.stat(nf)
+                    now["shape"][os.path.basename(nf)] = [st.st_size, st.st_mtime]
+                if prev.get("held") == "convert failed" and prev.get("shape") == now["shape"]:
+                    state[name] = prev
+                    continue
             if now["partial"] and not declared:
                 log(f"watching {name}: transfer still in progress (partial files)")
                 state[name] = {"shape": now["shape"], "stable": 0}
@@ -1090,6 +1201,29 @@ def main(argv=None):
                 log(f"watching {name}: {now['files']} files, {human(now['bytes'])} "
                     f"(stable {stable}/{STABLE_POLLS})")
                 state[name] = {"shape": now["shape"], "stable": stable}
+                continue
+
+            if convertible:
+                if args.dry_run:
+                    log(f"would convert {name} ({human(now['bytes'])} disc image)")
+                    continue
+                log(f"converting {name} ({human(now['bytes'])} disc image)")
+                try:
+                    item = convert_disc_image(cfg, name, log)
+                    state.pop(name, None)
+                    # The new item joins this tick's listing: the loop reaches
+                    # it next (its marker lets it skip the stability wait, so
+                    # it is filed straight away) and its marker is not swept.
+                    entries.append(item)
+                except PickupError as e:
+                    log(f"  convert FAILED, disc left in the inbox: {e}", "ERROR")
+                    state[name] = {"shape": now["shape"], "stable": 0,
+                                   "held": "convert failed", "last_error": str(e)}
+                except Exception as e:
+                    log(f"  convert FAILED unexpectedly, disc left in the inbox: "
+                        f"{type(e).__name__}: {e}", "ERROR")
+                    state[name] = {"shape": now["shape"], "stable": 0,
+                                   "held": "convert failed", "last_error": f"{type(e).__name__}: {e}"}
                 continue
 
             log(f"processing {name} ({now['files']} files, {human(now['bytes'])})")

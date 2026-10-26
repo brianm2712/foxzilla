@@ -332,20 +332,6 @@ check("movie with two same-named extras hands off",
 check("both extras survive under distinct names", len(extras) == 2, extras)
 MP.MIN_FEATURE_BYTES = 200 * 1024 * 1024
 
-# ---------------------------------------------------------------- disc images
-print("\ndisc_images_are_held_in_the_inbox  (2026-10-26: DVD .iso rips; Jellyfin cannot play disc images, so filing them hides them)")
-e = Env()
-mkfile(os.path.join(e.upload, "MY_LEFT_FOOT.iso"), 50000)
-mkfile(os.path.join(e.upload, "Bluey", "Bluey S01E01.mkv"), 4096)
-e.run()
-e.run()
-held = [l for l in open(e.log).read().splitlines() if "disc image" in l]
-check("the iso stays in the inbox", os.path.exists(os.path.join(e.upload, "MY_LEFT_FOOT.iso")))
-check("nothing iso-shaped reaches the libraries",
-      not any(f.endswith(".iso") for _dp, _d, fs in os.walk(e.base) if "incoming" not in _dp for f in fs))
-check("the hold is logged once, not every tick", len(held) == 1 and "WARN" in held[0], held)
-check("other uploads still flow", videos_under(e.shows) != [])
-
 # ---------------------------------------------------------------- disc label
 print("\ndisc label -> title")
 def mkiso(path, label):
@@ -408,6 +394,74 @@ try:
     MP.remux_title("x.iso", 1, out); check("ffmpeg failure raises", False)
 except MP.PickupError as err:
     check("ffmpeg failure raises with stderr", "bad disc" in str(err), err)
+MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+
+# ---------------------------------------------------------------- disc images
+print("\ndisc_images_are_held_when_ffmpeg_is_missing  (the 2026-10-26 behaviour, kept for images without ffmpeg)")
+e = Env()
+MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+mkiso(os.path.join(e.upload, "MY_LEFT_FOOT.iso"), "MY_LEFT_FOOT")
+mkfile(os.path.join(e.upload, "Bluey", "Bluey S01E01.mkv"), 4096)
+e.run(); e.run()
+held = [l for l in open(e.log).read().splitlines() if "disc image" in l]
+check("the iso stays in the inbox", os.path.exists(os.path.join(e.upload, "MY_LEFT_FOOT.iso")))
+check("nothing iso-shaped reaches the libraries",
+      not any(f.endswith(".iso") for _dp, _d, fs in os.walk(e.base) if "incoming" not in _dp for f in fs))
+check("the hold is logged once, not every tick", len(held) == 1 and "WARN" in held[0], held)
+check("other uploads still flow", videos_under(e.shows) != [])
+
+print("\ndvd_iso_is_remuxed_and_filed  (2026-10-26: the three held DVD rips)")
+e = Env()
+calls = ffstubs(e.base, {1: 13.0, 2: 5927.5})
+MP.jf_movie_lookup = lambda host, creds, title, log: ("My Left Foot", 1989)
+mkiso(os.path.join(e.upload, "MY_LEFT_FOOT.iso"), "MY_LEFT_FOOT")
+e.run()
+today = ".removed-" + time.strftime("%Y%m%d")
+park = os.path.join(e.upload, today, "MY_LEFT_FOOT.iso")
+check("the longest title was remuxed", "-title 2" in open(calls).read())
+check("iso parked, not deleted", os.path.exists(park) and not os.path.exists(os.path.join(e.upload, "MY_LEFT_FOOT.iso")))
+check("the mkv is filed in Movies on the same tick, through the verified handoff",
+      videos_under(e.movies) == [os.path.join("My Left Foot (1989)", "My Left Foot (1989).mkv")]
+      and any("reconciled 1/1" in l for l in e.tail(12)), videos_under(e.movies))
+check("inbox clean apart from the parked iso", sorted(os.listdir(e.upload)) == [today], os.listdir(e.upload))
+check("the marker was consumed, not swept", not os.path.exists(MP.marker_for(e.upload, "My Left Foot (1989)")))
+check("no 'holding' line", not any("holding" in l for l in open(e.log).read().splitlines()))
+
+print("\na .name file beside the iso wins outright")
+e = Env()
+ffstubs(e.base, {1: 48.0, 2: 5456.0})
+MP.jf_movie_lookup = lambda *a: (_ for _ in ()).throw(AssertionError("lookup must not run"))
+mkiso(os.path.join(e.upload, "BBCDVD3090.iso"), "BBCDVD3090")
+mkfile(os.path.join(e.upload, "BBCDVD3090.iso.name"), content=b"The Snapper (1993)\n")
+e.run()
+check("named from the file", videos_under(e.movies) == [os.path.join("The Snapper (1993)", "The Snapper (1993).mkv")], videos_under(e.movies))
+check(".name parked with the iso", os.path.exists(os.path.join(e.upload, today, "BBCDVD3090.iso.name")), os.listdir(os.path.join(e.upload, today)))
+check("the .name file was never treated as an upload", not any("BBCDVD3090.iso.name" in l for l in e.tail(20)), e.tail(5))
+
+print("\nlookup failure -> label only, warned, not fatal")
+e = Env()
+ffstubs(e.base, {1: 100.0})
+MP.jf_movie_lookup = lambda *a: (_ for _ in ()).throw(OSError("jellyfin down"))
+mkiso(os.path.join(e.upload, "LES_MISERABLES.iso"), "LES_MISERABLES")
+e.run()
+check("filed under the title-cased label", os.path.isdir(os.path.join(e.movies, "Les Miserables")), os.listdir(e.movies))
+check("warned about the missing year", any("WARN" in l and "year" in l for l in e.tail(20)), e.tail(5))
+
+print("\nffmpeg failure: iso stays, warned once, not retried every tick")
+e = Env()
+calls = ffstubs(e.base, {1: 100.0}, fail=True)
+MP.jf_movie_lookup = lambda *a: None
+mkiso(os.path.join(e.upload, "BAD.iso"), "BAD")
+e.run(); e.run(); e.run()
+check("iso still in the inbox", os.path.exists(os.path.join(e.upload, "BAD.iso")))
+check("ffmpeg ran once", open(calls).read().count("\n") == 1, open(calls).read())
+check("failure logged once", sum(1 for l in open(e.log).read().splitlines() if "convert" in l and "FAILED" in l) == 1, e.tail(6))
+conv = os.path.join(e.upload, MP.CONVERTING_DIR)
+check("no half-written output left", not os.path.exists(conv) or not os.listdir(conv))
+mkfile(os.path.join(e.upload, "BAD.iso.name"), content=b"Fixed (2000)\n")
+ffstubs(e.base, {1: 100.0})
+e.run()
+check("a .name file appearing retries the conversion", os.path.isdir(os.path.join(e.movies, "Fixed (2000)")), os.listdir(e.movies))
 MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
