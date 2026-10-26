@@ -761,6 +761,59 @@ def jf_rescan(host, creds, log):
         log(f"could not trigger Jellyfin rescan: {e}", "WARN")
 
 
+def fold(s):
+    """Accent- and case-insensitive form for comparing titles."""
+    return "".join(c for c in unicodedata.normalize("NFKD", s)
+                   if not unicodedata.combining(c)).casefold().strip()
+
+
+def pick_movie_match(results, title):
+    """
+    First TheMovieDb result whose name starts with ours -> (name, year).
+
+    An exact match keeps the provider's spelling (accents); a longer provider
+    title ("My Left Foot: The Story of ...") keeps our title and takes the year.
+    """
+    for r in results or []:
+        if r.get("SearchProviderName") != "TheMovieDb" or not r.get("ProductionYear"):
+            continue
+        name = r.get("Name") or ""
+        if fold(name) == fold(title):
+            return name, int(r["ProductionYear"])
+        if fold(name).startswith(fold(title)):
+            return title, int(r["ProductionYear"])
+    return None
+
+
+def movie_item_name(title, year):
+    """'Title (Year)' as a single safe path component."""
+    safe = re.sub(r"[/\\]", "-", title).replace(":", "").strip(". ")
+    safe = re.sub(r"\s+", " ", safe)
+    return f"{safe} ({year})" if year else safe
+
+
+def jf_auth_headers(creds):
+    if creds.get("api_key"):
+        return {"X-Emby-Token": creds["api_key"]}
+    if creds.get("token"):
+        return jf_headers(creds["token"])
+    return None
+
+
+def jf_movie_lookup(host, creds, title, log):
+    """Ask Jellyfin's metadata providers for the film's year. None when unsure."""
+    headers = jf_auth_headers(creds)
+    if not headers:
+        log("  no Jellyfin credential - run 'media_pickup.py --login' to get years for discs", "WARN")
+        return None
+    req = urllib.request.Request(
+        f"http://{host}/Items/RemoteSearch/Movie",
+        data=json.dumps({"SearchInfo": {"Name": title}}).encode(),
+        headers={**headers, "Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return pick_movie_match(json.load(r), title)
+
+
 # --------------------------------------------------------------------------
 # processing one item
 # --------------------------------------------------------------------------

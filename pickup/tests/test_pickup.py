@@ -365,6 +365,19 @@ try:
 except MP.PickupError:
     check("non-ISO rejected", True)
 
+# ---------------------------------------------------------------- year lookup
+print("\npicking the year from Jellyfin's metadata search")
+R = lambda n, y, p="TheMovieDb": {"Name": n, "ProductionYear": y, "SearchProviderName": p}
+check("exact match keeps the provider's accents",
+      MP.pick_movie_match([R("Les Misérables", 2012), R("Les Miserables", 1995)], "Les Miserables") == ("Les Misérables", 2012))
+check("longer provider title keeps our title, takes the year",
+      MP.pick_movie_match([R("My Left Foot: The Story of Christy Brown", 1989), R("My Left Foot", 1990, "OMDb")], "My Left Foot") == ("My Left Foot", 1989))
+check("non-TMDb results are ignored", MP.pick_movie_match([R("The Snapper", 1993, "OMDb")], "The Snapper") is None)
+check("unrelated results are ignored", MP.pick_movie_match([R("Snapper", 2021)], "The Snapper") is None)
+check("no year is no match", MP.pick_movie_match([R("The Snapper", None)], "The Snapper") is None)
+check("display name", MP.movie_item_name("My Left Foot", 1989) == "My Left Foot (1989)" and MP.movie_item_name("BBCDVD3090", None) == "BBCDVD3090")
+check("slashes cannot escape the folder", MP.movie_item_name("AC/DC: Live", 1992) == "AC-DC Live (1992)", MP.movie_item_name("AC/DC: Live", 1992))
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]
