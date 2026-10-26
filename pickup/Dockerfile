@@ -1,14 +1,16 @@
 # Foxzilla pickup — the verifying half of the pipeline.
 #
-# Pure stdlib, so there is nothing to install and no wheel to trust.
+# Pure stdlib plus Debian's ffmpeg, whose dvdvideo demuxer turns a held DVD
+# ISO into an MKV. No wheels to trust.
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="foxzilla-pickup" \
       org.opencontainers.image.description="Three-phase verified media handoff with a Jellyfin rescan" \
       org.opencontainers.image.source="https://github.com/brianm2712/foxzilla"
 
-# tzdata only, so log timestamps match the host rather than drifting to UTC.
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+# tzdata so log timestamps match the host rather than drifting to UTC;
+# ffmpeg (trixie's build has libdvdread/libdvdnav) for DVD images.
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY media_pickup.py /app/media_pickup.py
@@ -30,6 +32,7 @@ ENV MEDIA_PICKUP_CREDENTIALS=/config/credentials.json \
     RECEIPTS_DIR=/config/receipts \
     LOCK_FILE=/tmp/media_pickup.lock \
     JELLYFIN_HOST=jellyfin:8096 \
+    PARK_DIR= \
     TZ=UTC \
     INTERVAL=60 \
     RUN_ONCE=
