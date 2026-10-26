@@ -297,6 +297,55 @@ MP.reconcile = real
 check("source survives a premature marker", os.path.exists(os.path.join(e.upload, "Early", "a.mkv")))
 check("failure reported", any("FAILED, source left intact" in l for l in e.tail(6)))
 
+# ---------------------------------------------------------------- same-named copies
+print("\nsame_named_copies_in_a_pack  (2026-10-26: Toy Story 2 arrived x4, the copies clobbered each other -> '3 missing', retried hourly)")
+e = Env()
+MP.MIN_FEATURE_BYTES = 10000
+pack = os.path.join(e.upload, "Toy.Story.2.1999.REMUX")
+full = os.urandom(40000)
+mkfile(os.path.join(pack, "Toy.Story.2.1999.REMUX.mkv"), content=full[:35000])       # top-level copy, truncated
+for u in ("50E44C52", "AE183644", "D1E39235"):                                      # upload-client duplicate folders
+    mkfile(os.path.join(pack, f"{u}-Toy.Story.2.1999.REMUX", "Toy.Story.2.1999.REMUX.mkv"), content=full)
+e.run()
+all_mkv = [os.path.relpath(os.path.join(dp, f), e.movies)
+           for dp, _d, fs in os.walk(e.movies) for f in fs if f.endswith(".mkv")]
+feature = os.path.join(e.movies, "Toy.Story.2.1999.REMUX", "Toy.Story.2.1999.REMUX.mkv")
+check("pack with four same-named copies hands off",
+      not any("FAILED" in l for l in e.tail(12)) and videos_under(e.upload) == [], e.tail(4))
+check("the largest copy is the feature", os.path.exists(feature) and os.path.getsize(feature) == 40000)
+check("the other copies are kept, not clobbered", len(all_mkv) == 4, all_mkv)
+check("duplicates land in _leftovers", sum(1 for p in all_mkv if "_leftovers" in p) == 3, all_mkv)
+MP.MIN_FEATURE_BYTES = 200 * 1024 * 1024
+
+# ---------------------------------------------------------------- same-named extras
+print("\nsame_named_extras_in_a_movie  (same clobber class on the single-feature path: extras/ flattens names)")
+e = Env()
+MP.MIN_FEATURE_BYTES = 10000
+pack = os.path.join(e.upload, "Warrior (2011)")
+mkfile(os.path.join(pack, "Warrior.mkv"), 40000)
+mkfile(os.path.join(pack, "Featurettes", "sample.mkv"), 500)
+mkfile(os.path.join(pack, "Trailers", "sample.mkv"), 600)
+e.run()
+extras = sorted(os.listdir(os.path.join(e.movies, "Warrior (2011)", "extras"))) if os.path.isdir(os.path.join(e.movies, "Warrior (2011)", "extras")) else []
+check("movie with two same-named extras hands off",
+      not any("FAILED" in l for l in e.tail(12)) and videos_under(e.upload) == [], e.tail(4))
+check("both extras survive under distinct names", len(extras) == 2, extras)
+MP.MIN_FEATURE_BYTES = 200 * 1024 * 1024
+
+# ---------------------------------------------------------------- disc images
+print("\ndisc_images_are_held_in_the_inbox  (2026-10-26: DVD .iso rips; Jellyfin cannot play disc images, so filing them hides them)")
+e = Env()
+mkfile(os.path.join(e.upload, "MY_LEFT_FOOT.iso"), 50000)
+mkfile(os.path.join(e.upload, "Bluey", "Bluey S01E01.mkv"), 4096)
+e.run()
+e.run()
+held = [l for l in open(e.log).read().splitlines() if "disc image" in l]
+check("the iso stays in the inbox", os.path.exists(os.path.join(e.upload, "MY_LEFT_FOOT.iso")))
+check("nothing iso-shaped reaches the libraries",
+      not any(f.endswith(".iso") for _dp, _d, fs in os.walk(e.base) if "incoming" not in _dp for f in fs))
+check("the hold is logged once, not every tick", len(held) == 1 and "WARN" in held[0], held)
+check("other uploads still flow", videos_under(e.shows) != [])
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]

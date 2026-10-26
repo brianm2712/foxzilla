@@ -76,6 +76,7 @@ CRED_FILE = os.environ.get(
     os.path.expanduser("~/.config/media_pickup/credentials.json"))
 
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".m2ts"}
+DISC_IMAGE_EXTS = {".iso", ".img"}   # Jellyfin cannot play disc images: held, not filed
 # Files a transfer client leaves behind while it is still writing.
 PARTIAL_EXTS = {".filepart", ".part", ".crdownload", ".!qb", ".tmp", ".partial"}
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
@@ -411,12 +412,26 @@ def organize_movie_staging(staging, title, log, renames=None):
     large = [v for v in ordered if sizes[v] >= threshold]
 
     if len(large) > 1:
-        log(f"  multi-movie pack: {len(large)} full-size features -> splitting")
+        # One feature per file name. Upload clients sometimes send the same
+        # film several times over (UUID-prefixed duplicate folders). Before
+        # this, same-named copies were renamed onto each other, the survivor
+        # was whichever came last - the smallest, i.e. a truncated transfer -
+        # and reconciliation then failed on every retry, for hours.
+        # `ordered` is largest first, so the largest copy of each name wins;
+        # the rest are left in staging and fall through to _leftovers.
+        features = {}
+        for v in large:
+            features.setdefault(os.path.splitext(os.path.basename(v))[0], v)
+        dupes = len(large) - len(features)
+        if dupes:
+            log(f"  {dupes} same-named cop{'y' if dupes == 1 else 'ies'} of a feature "
+                f"-> largest kept, the rest go to _leftovers")
+        if len(features) > 1:
+            log(f"  multi-movie pack: {len(features)} full-size features -> splitting")
         splits = {}
         holding = os.path.join(os.path.dirname(staging), f".split-{os.path.basename(staging)}")
         os.makedirs(holding, exist_ok=True)
-        for v in large:
-            movie_title = os.path.splitext(os.path.basename(v))[0]
+        for movie_title, v in features.items():
             folder = os.path.join(holding, movie_title)
             os.makedirs(folder, exist_ok=True)
             os.rename(os.path.join(staging, v), os.path.join(folder, os.path.basename(v)))
@@ -449,8 +464,18 @@ def organize_movie_staging(staging, title, log, renames=None):
         src = os.path.join(staging, v)
         if not os.path.exists(src) or os.path.dirname(v) == "extras":
             continue
-        os.replace(src, os.path.join(extras, os.path.basename(v)))
-        renames[v] = (title, os.path.join("extras", os.path.basename(v)))
+        target_name = os.path.basename(v)
+        if os.path.exists(os.path.join(extras, target_name)):
+            # Same name from different folders (Featurettes/sample.mkv,
+            # Trailers/sample.mkv): flattening into extras/ would clobber
+            # one and fail reconciliation. Keep both, tagged by folder.
+            stem, ext = os.path.splitext(target_name)
+            parent = os.path.basename(os.path.dirname(v)) or "copy"
+            target_name, n = f"{stem} ({parent}){ext}", 2
+            while os.path.exists(os.path.join(extras, target_name)):
+                target_name, n = f"{stem} ({parent} {n}){ext}", n + 1
+        os.replace(src, os.path.join(extras, target_name))
+        renames[v] = (title, os.path.join("extras", target_name))
         moved += 1
     log(f"  organized movie: feature={wanted}, {moved} extra(s)")
     return {title: staging}
@@ -908,6 +933,17 @@ def main(argv=None):
             marker = marker_for(cfg["upload_dir"], name)
             declared = os.path.exists(marker)
 
+            imgs = [p for p in now["shape"] if os.path.splitext(p)[1].lower() in DISC_IMAGE_EXTS]
+            if imgs:
+                # A DVD/Blu-ray rip as an image. Filing it would only hide it:
+                # Jellyfin ignores .iso. Leave it where the uploader can see it
+                # and say so once, not every tick.
+                if prev.get("held") != "disc image":
+                    more = f" +{len(imgs) - 1} more" if len(imgs) > 1 else ""
+                    log(f"holding {name}: disc image ({imgs[0]}{more}) - Jellyfin cannot play "
+                        f"disc images; convert to MKV and it will be picked up", "WARN")
+                state[name] = {"shape": now["shape"], "stable": 0, "held": "disc image"}
+                continue
             if now["partial"] and not declared:
                 log(f"watching {name}: transfer still in progress (partial files)")
                 state[name] = {"shape": now["shape"], "stable": 0}
