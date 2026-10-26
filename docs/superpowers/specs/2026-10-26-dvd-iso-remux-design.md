@@ -47,8 +47,10 @@ files, quiet period, two stable polls, or a `.complete` marker), then
    title-cased (`MY_LEFT_FOOT` → `My Left Foot`; `_`/`.` → space; tokens that
    are all letters are capitalised, others kept) and Jellyfin's metadata search
    is asked for the year: first result from `TheMovieDb` whose name, lowercased
-   and with accents stripped, starts with the query → use that result's name
-   (keeps the accent: `Les Misérables`) and year → `Les Misérables (2012)`.
+   and with accents stripped, starts with the query → take its year; its name
+   is used only when it equals ours apart from accents and case (so
+   `Les Misérables (2012)`, but `My Left Foot (1989)` rather than TMDb's
+   `My Left Foot: The Story of Christy Brown`).
    No match, no credential or any network error → label-only name, logged once.
 3. **Title**: `ffprobe -f dvdvideo -title N -i iso` for N = 1, 2, … collecting
    durations; stop after 3 consecutive failures; pick the longest. None →
@@ -63,10 +65,12 @@ files, quiet period, two stable polls, or a `.complete` marker), then
    never deleted. If `<upload>/<Name>` already exists the step fails before
    ffmpeg runs ("converted item already in the inbox").
 
-The next tick files `<Name>/<Name>.mkv` through the normal hashed three-phase
-handoff (manifest, stage, commit, reconcile), removes the folder and rescans
-Jellyfin. The pickup log for a disc therefore reads: watching → converting →
-converted → processing → committed, with no `holding` line.
+The new item joins the same tick's listing, and its marker lets it skip the
+stability wait, so `<Name>/<Name>.mkv` is filed straight away through the
+normal hashed three-phase handoff (manifest, stage, commit, reconcile), the
+folder is removed and Jellyfin rescanned. The pickup log for a disc therefore
+reads: watching → converting → converted → processing → committed, with no
+`holding` line.
 
 ### Failure handling
 
