@@ -419,6 +419,7 @@ e.run()
 today = ".removed-" + time.strftime("%Y%m%d")
 park = os.path.join(e.upload, today, "MY_LEFT_FOOT.iso")
 check("the longest title was remuxed", "-title 2" in open(calls).read())
+check("log names the title and how many were readable", any("title 2 (98.8 min, longest of 2 readable)" in l for l in e.tail(30)), e.tail(30)[:3])
 check("iso parked, not deleted", os.path.exists(park) and not os.path.exists(os.path.join(e.upload, "MY_LEFT_FOOT.iso")))
 check("the mkv is filed in Movies on the same tick, through the verified handoff",
       videos_under(e.movies) == [os.path.join("My Left Foot (1989)", "My Left Foot (1989).mkv")]

@@ -941,7 +941,8 @@ def convert_disc_image(cfg, name, log):
     best = longest_title(found)
     if not best:
         raise PickupError("no readable DVD titles on the disc")
-    log(f"  title {best[0]} of {len(found)} ({best[1] / 60:.1f} min) -> {item}/{item}.mkv ({why})")
+    log(f"  title {best[0]} ({best[1] / 60:.1f} min, longest of {len(found)} readable) "
+        f"-> {item}/{item}.mkv ({why})")
     work = os.path.join(cfg["upload_dir"], CONVERTING_DIR, item)
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
