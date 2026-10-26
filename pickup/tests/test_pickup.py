@@ -346,6 +346,25 @@ check("nothing iso-shaped reaches the libraries",
 check("the hold is logged once, not every tick", len(held) == 1 and "WARN" in held[0], held)
 check("other uploads still flow", videos_under(e.shows) != [])
 
+# ---------------------------------------------------------------- disc label
+print("\ndisc label -> title")
+def mkiso(path, label):
+    """17 sectors; a primary volume descriptor at sector 16 carrying the label."""
+    pvd = bytearray(2048); pvd[0] = 1; pvd[1:6] = b"CD001"; pvd[7] = 1
+    pvd[40:72] = label.encode("ascii").ljust(32)
+    mkfile(path, content=bytes(2048 * 16) + bytes(pvd))
+e = Env()
+mkiso(os.path.join(e.upload, "MY_LEFT_FOOT.iso"), "MY_LEFT_FOOT")
+check("label read from the PVD", MP.read_iso_label(os.path.join(e.upload, "MY_LEFT_FOOT.iso")) == "MY_LEFT_FOOT")
+for label, want in [("MY_LEFT_FOOT", "My Left Foot"), ("LES_MISERABLES", "Les Miserables"),
+                    ("BBCDVD3090", "BBCDVD3090"), ("THE.SNAPPER", "The Snapper"), ("", "")]:
+    check(f"title_from_label({label!r}) == {want!r}", MP.title_from_label(label) == want, MP.title_from_label(label))
+mkfile(os.path.join(e.upload, "junk.iso"), 4096)
+try:
+    MP.read_iso_label(os.path.join(e.upload, "junk.iso")); check("non-ISO rejected", False)
+except MP.PickupError:
+    check("non-ISO rejected", True)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]

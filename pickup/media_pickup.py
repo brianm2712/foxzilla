@@ -44,9 +44,11 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -76,7 +78,27 @@ CRED_FILE = os.environ.get(
     os.path.expanduser("~/.config/media_pickup/credentials.json"))
 
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".m2ts"}
-DISC_IMAGE_EXTS = {".iso", ".img"}   # Jellyfin cannot play disc images: held, not filed
+DISC_IMAGE_EXTS = {".iso", ".img"}   # DVD-Video images: remuxed to MKV, or held if ffmpeg is missing
+ISO_SECTOR = 2048
+
+
+def read_iso_label(path):
+    """Volume id from the ISO9660 primary volume descriptor (sector 16)."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(16 * ISO_SECTOR)
+            pvd = fh.read(ISO_SECTOR)
+    except OSError as e:
+        raise PickupError(f"cannot read {os.path.basename(path)}: {e}")
+    if len(pvd) < ISO_SECTOR or pvd[1:6] != b"CD001":
+        raise PickupError(f"{os.path.basename(path)} is not an ISO9660 image")
+    return pvd[40:72].decode("ascii", "replace").strip()
+
+
+def title_from_label(label):
+    """MY_LEFT_FOOT -> My Left Foot. Tokens that are not plain words are kept."""
+    words = [w for w in re.split(r"[_.\s]+", label.strip()) if w]
+    return " ".join(w.capitalize() if w.isalpha() else w for w in words)
 # Files a transfer client leaves behind while it is still writing.
 PARTIAL_EXTS = {".filepart", ".part", ".crdownload", ".!qb", ".tmp", ".partial"}
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
