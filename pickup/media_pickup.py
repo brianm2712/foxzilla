@@ -815,6 +815,57 @@ def jf_movie_lookup(host, creds, title, log):
 
 
 # --------------------------------------------------------------------------
+# disc images: ffprobe/ffmpeg (Debian's build has the dvdvideo demuxer, which
+# reads a DVD-Video ISO directly - no loop mount, no privileges)
+# --------------------------------------------------------------------------
+
+FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
+FFPROBE = os.environ.get("FFPROBE", "ffprobe")
+TITLE_PROBE_MISSES = 3      # consecutive unreadable titles that end the scan
+TITLE_PROBE_MAX = 99
+
+
+def ffmpeg_available():
+    return bool(shutil.which(FFMPEG) and shutil.which(FFPROBE))
+
+
+def probe_titles(iso):
+    """[(title number, seconds)] for every readable title on the disc."""
+    found, misses, n = [], 0, 0
+    while misses < TITLE_PROBE_MISSES and n < TITLE_PROBE_MAX:
+        n += 1
+        p = subprocess.run([FFPROBE, "-v", "error", "-f", "dvdvideo", "-title", str(n),
+                            "-i", iso, "-show_entries", "format=duration", "-of", "csv=p=0"],
+                           capture_output=True, text=True)
+        try:
+            secs = float(p.stdout.strip().split(",")[0]) if p.returncode == 0 else None
+        except ValueError:
+            secs = None
+        if secs is None:
+            misses += 1
+            continue
+        misses = 0
+        found.append((n, secs))
+    return found
+
+
+def longest_title(found):
+    return max(found, key=lambda t: t[1]) if found else None
+
+
+def remux_title(iso, title_no, out_path):
+    """Lossless: the title's video, every audio and subtitle stream, chapters."""
+    cmd = [FFMPEG, "-nostdin", "-y", "-v", "error", "-f", "dvdvideo", "-title", str(title_no),
+           "-i", iso, "-map", "0", "-c", "copy", "-f", "matroska", out_path]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        tail = " | ".join(l for l in p.stderr.strip().splitlines()[-5:] if l.strip())
+        raise PickupError(f"ffmpeg failed (rc {p.returncode}): {tail or 'no output'}")
+    if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        raise PickupError("ffmpeg produced no output")
+
+
+# --------------------------------------------------------------------------
 # processing one item
 # --------------------------------------------------------------------------
 

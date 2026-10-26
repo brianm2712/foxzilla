@@ -378,6 +378,38 @@ check("no year is no match", MP.pick_movie_match([R("The Snapper", None)], "The 
 check("display name", MP.movie_item_name("My Left Foot", 1989) == "My Left Foot (1989)" and MP.movie_item_name("BBCDVD3090", None) == "BBCDVD3090")
 check("slashes cannot escape the folder", MP.movie_item_name("AC/DC: Live", 1992) == "AC-DC Live (1992)", MP.movie_item_name("AC/DC: Live", 1992))
 
+# ---------------------------------------------------------------- ffmpeg wrappers
+def ffstubs(base, titles, fail=False):
+    """Stand-ins for ffprobe/ffmpeg. titles: {n: seconds, or None for a title that fails}."""
+    d = os.path.join(base, "bin"); os.makedirs(d, exist_ok=True)
+    probe = os.path.join(d, "ffprobe"); enc = os.path.join(d, "ffmpeg"); calls = os.path.join(d, "ffmpeg.calls")
+    with open(probe, "w") as fh:
+        fh.write("#!/usr/bin/env python3\nimport sys\nT=%r\nn=int(sys.argv[sys.argv.index('-title')+1])\n"
+                 "d=T.get(n)\nif d is None: print('Stream not found', file=sys.stderr); sys.exit(1)\nprint(d)\n" % titles)
+    with open(enc, "w") as fh:
+        fh.write("#!/usr/bin/env python3\nimport sys,os\nopen(%r,'a').write(' '.join(sys.argv[1:])+'\\n')\n"
+                 "if %r: print('bad disc', file=sys.stderr); sys.exit(1)\n"
+                 "open(sys.argv[-1],'wb').write(b'MKV'*5000)\n" % (calls, fail))
+    for p in (probe, enc): os.chmod(p, 0o755)
+    MP.FFPROBE, MP.FFMPEG = probe, enc
+    return calls
+
+print("\ntitle scan: longest wins, a dead title in the middle is skipped")
+e = Env()
+ffstubs(e.base, {1: 25.4, 2: 14.4, 3: None, 4: 31.4, 5: 9081.8, 6: 8.5})
+found = MP.probe_titles("x.iso")
+check("six titles found despite the gap", sorted(n for n, _ in found) == [1, 2, 4, 5, 6], found)
+check("longest chosen", MP.longest_title(found) == (5, 9081.8))
+out = os.path.join(e.base, "out.mkv")
+MP.remux_title("x.iso", 5, out)
+check("remux writes the file", os.path.getsize(out) > 0)
+ffstubs(e.base, {1: 10.0}, fail=True)
+try:
+    MP.remux_title("x.iso", 1, out); check("ffmpeg failure raises", False)
+except MP.PickupError as err:
+    check("ffmpeg failure raises with stderr", "bad disc" in str(err), err)
+MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]
