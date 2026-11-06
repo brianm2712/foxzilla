@@ -74,7 +74,7 @@ the file is relayed through a temp file on this machine.
 
 ## Tests
 
-    tests/run.sh
+    python3 tests/run_all.py client
 
 `test_ftp` and `test_dav_s3` start their own mock servers and need nothing
 external. `test_sftp`, `test_queue` and `test_gui` transfer real files to whatever

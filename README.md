@@ -147,11 +147,13 @@ python3 client/foxzilla.py --check mediadrop
 ## Tests
 
 ```
-client/tests/run.sh              # FTP and WebDAV/S3 run against mock servers
-                                 # SFTP tests need FOXZILLA_TEST_SSH_HOST set
-python3 pickup/tests/test_pickup.py
-python3 pickup/tests/test_credentials.py
+python3 tests/run_all.py         # every test file; non-zero exit if any fails
+python3 tests/run_all.py client  # just one area (client, web, build, pickup)
 ```
+
+FTP and WebDAV/S3 run against mock servers on loopback, and the SFTP password
+test drives a pty, so run those outside any sandbox that forbids either. The
+live SFTP tests skip unless `FOXZILLA_TEST_SSH_HOST` is set.
 
 The pickup tests are named for the bugs they reproduce (`bug_1_multiseason_merge_crash`, `bug_2_retry_duplication`, …). The client's FTP, WebDAV and S3 tests spin up their own servers; the S3 mock independently recomputes the SigV4 signature and rejects mismatches.
 
