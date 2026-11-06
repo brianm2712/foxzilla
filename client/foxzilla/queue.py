@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 
 from .backends import Backend, LocalBackend, TransferError, safe_name, under_root
-from .util import APP
+from .util import APP, VERSION
 
 
 COMPLETE_SUFFIX = ".complete"
@@ -19,6 +19,89 @@ PART_SUFFIX = ".part"
 def marker_path(directory: str, name: str) -> str:
     """Where the completion marker for `name` lives. Mirrors the watcher."""
     return posixpath.join(directory, f".{name}{COMPLETE_SUFFIX}")
+
+
+def write_marker(backend, path):
+    """Drop the '.<name>.complete' marker at `path` on `backend`."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{APP}-marker-")
+    try:
+        os.write(fd, f"verified by {APP} {VERSION}\n".encode())
+        os.close(fd)
+        backend.write_from(tmp, path)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+class Batch:
+    """
+    One item the user sent - a file or a folder - and every job it becomes.
+
+    It decides when that item's completion marker may be written: once it is
+    armed (all of the item's files are queued) and every one of its jobs has
+    finished, with none failed or cancelled. `on_done(batch)` is called
+    exactly once at that point, from whichever thread got there; `ok` and
+    `reason` say whether a marker is earned.
+
+    Owning its jobs is the point. The old rule - write every pending marker
+    when the whole queue goes idle - fired early whenever the queue drained
+    while a scan was still running, and ignored cancellations, and a marker
+    makes the watcher skip its stability wait and file what it has.
+    """
+
+    TERMINAL_OK = ("done", "skipped")
+
+    def __init__(self, name, on_done=None, dst=None, marker=None):
+        self.name = name
+        self.on_done = on_done
+        self.dst, self.marker = dst, marker      # where its marker would go
+        self.jobs: list[Job] = []
+        self.armed = False
+        self.fired = False
+        self.ok = False
+        self.reason = ""
+        self._taint = ""
+        self._lock = threading.Lock()
+
+    def add(self, job: Job):
+        with self._lock:
+            job.batch = self
+            self.jobs.append(job)
+
+    def taint(self, reason: str):
+        """Something outside the jobs means the item is not complete."""
+        with self._lock:
+            self._taint = self._taint or reason
+
+    def arm(self):
+        """All of the item's files are queued; it may now complete."""
+        with self._lock:
+            self.armed = True
+        self.check()
+
+    def check(self):
+        with self._lock:
+            if not self.armed or self.fired:
+                return
+            if any(j.state in ("queued", "running") for j in self.jobs):
+                return
+            self.fired = True
+            failed = sum(1 for j in self.jobs if j.state == "failed")
+            cancelled = sum(1 for j in self.jobs if j.state == "cancelled")
+            if self._taint:
+                self.reason = self._taint
+            elif failed:
+                self.reason = f"{failed} transfer(s) failed"
+            elif cancelled:
+                self.reason = f"{cancelled} transfer(s) cancelled"
+            elif not self.jobs:
+                self.reason = "nothing was transferred"
+            self.ok = not self.reason
+            callback = self.on_done
+        if callback:
+            callback(self)
 
 
 @dataclass
@@ -37,6 +120,9 @@ class Job:
     # The destination folder the user chose. Every path this job (and every
     # child it expands into) writes must stay inside it.
     dst_root: str = ""
+    # The item this job belongs to, when the destination wants a completion
+    # marker. Children of an expanded folder inherit it.
+    batch: "Batch | None" = None
     cancel: threading.Event = field(default_factory=threading.Event)
 
     @property
@@ -81,6 +167,20 @@ class Queue:
             self._lock.notify()
         self.on_change(job)
 
+    def add_batch(self, batch: Batch | None, jobs: list[Job]):
+        """Queue an item's jobs, then arm its batch - in that order."""
+        for job in jobs:
+            if batch is not None:
+                batch.add(job)
+            self.add(job)
+        if batch is not None:
+            batch.arm()
+
+    @staticmethod
+    def _settled(job: Job):
+        if job.batch is not None:
+            job.batch.check()
+
     def _insert_after(self, anchor: Job, children: list[Job]):
         with self._lock:
             try:
@@ -90,6 +190,10 @@ class Queue:
             self.jobs[at:at] = children
             self._lock.notify_all()
         for c in children:
+            # Joined before the parent finishes, so the batch can never see
+            # "all done" in the gap between a folder and its contents.
+            if anchor.batch is not None:
+                anchor.batch.add(c)
             self.on_change(c)
 
     def move(self, job: Job, delta: int):
@@ -116,9 +220,13 @@ class Queue:
 
     def cancel(self, job: Job):
         job.cancel.set()
-        if job.state == "queued":
-            job.state = "cancelled"
+        with self._lock:
+            was_queued = job.state == "queued"
+            if was_queued:
+                job.state = "cancelled"
+        if was_queued:
             self.on_change(job)
+            self._settled(job)
 
     def cancel_all(self):
         with self._lock:
@@ -219,6 +327,7 @@ class Queue:
             finally:
                 self._release(job)
             self.on_change(job)
+            self._settled(job)
 
     # -- the work itself --------------------------------------------------
 

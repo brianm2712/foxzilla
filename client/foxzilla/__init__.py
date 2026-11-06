@@ -27,7 +27,8 @@ from .backends import (CHUNK, Backend, Entry, FTPBackend, LocalBackend,
 from .config import (CONFIG_DIR, DEFAULT_SITES, SECRETS_FILE, SITES_FILE,
                      load_secrets, load_sites, needs_password, save_secret,
                      save_sites)
-from .queue import COMPLETE_SUFFIX, Job, Queue, marker_path
+from .queue import (COMPLETE_SUFFIX, PART_SUFFIX, Batch, Job, Queue, marker_path,
+                    write_marker)
 from .scan import (CLEAR, CONFLICT, IDENTICAL, SAME_SIZE, UNSAFE, WANTED, PlanItem,
                    compare_paths, plan_transfer, summarise)
 from .util import APP, VERSION, bar, human, when

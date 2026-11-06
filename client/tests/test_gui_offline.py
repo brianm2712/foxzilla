@@ -28,8 +28,12 @@ F.SITES_FILE = os.path.join(cfg, "sites.json")
 F.SECRETS_FILE = os.path.join(cfg, "secrets.json")
 work = tempfile.mkdtemp()
 open(os.path.join(work, "hello.txt"), "w").write("hi\n")
+os.makedirs(os.path.join(work, "Show", "S01"))
+for n in ("Show/a.mkv", "Show/S01/b.mkv"):
+    open(os.path.join(work, n), "w").write(n)
+drop = tempfile.mkdtemp()
 F.save_sites([{"name": "Local", "type": "local", "path": work},
-              {"name": "Scratch", "type": "local", "path": tempfile.mkdtemp()}])
+              {"name": "Drop", "type": "local", "path": drop, "drop": True}])
 
 root = tk.Tk(); root.withdraw()
 app = F.App(root)
@@ -43,10 +47,49 @@ def settle(ms=1000):
 settle()
 check("left pane connected to the local site", app.left.backend is not None
       and app.left.path == work, app.left.path)
-check("left pane listed the folder", [e.name for e in app.left.entries] == ["hello.txt"],
+check("left pane listed the folder",
+      sorted(e.name for e in app.left.entries) == ["Show", "hello.txt"],
       [e.name for e in app.left.entries])
 check("the queue view starts empty", not app.qtree.get_children())
 check("log has the connect line", "connected" in app.logbox.get("1.0", "end"))
+
+print("\nsending to a drop folder marks each item complete")
+import shutil
+app.right.site_var.set("Drop"); app.right.connect(); settle(800)
+check("right pane on the drop site", app.right.path == drop, app.right.path)
+for scan in (True, False):
+    for f in os.listdir(drop):
+        p = os.path.join(drop, f)
+        shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+    app.scan_var.set(scan)
+    app.left.tree.selection_set(("hello.txt", "Show"))
+    app.transfer(app.left)
+    settle(2500)
+    got = sorted(os.listdir(drop))
+    check(f"scan={scan}: both items and a marker for each",
+          got == [".Show.complete", ".hello.txt.complete", "Show", "hello.txt"], got)
+    check(f"scan={scan}: the folder arrived whole",
+          os.path.exists(os.path.join(drop, "Show", "S01", "b.mkv")))
+
+print("\nthe queue has its own connection to a remote site")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import json, ftpmock
+ftp_root = tempfile.mkdtemp()
+fport = ftpmock.serve(ftp_root)
+app.sites.append({"name": "FTP", "type": "ftp", "host": "127.0.0.1", "port": fport,
+                  "user": ftpmock.USER})
+json.dump({"FTP": ftpmock.PASSWORD}, open(F.SECRETS_FILE, "w"))
+app.right.reload_sites("FTP"); app.right.connect(); settle(800)
+check("right pane on FTP", app.right.backend is not None and app.right.backend.scheme == "ftp")
+app.scan_var.set(False)
+app.left.tree.selection_set(("hello.txt",))
+app.transfer(app.left)
+settle(1500)
+sent = [j for j in app.queue.jobs if j.name == "hello.txt" and j.dst.scheme == "ftp"]
+check("file arrived over FTP", os.path.exists(os.path.join(ftp_root, "hello.txt")))
+check("through a backend that is not the pane's", sent and sent[-1].dst is not app.right.backend,
+      sent)
+check("and the pane can still browse", "hello.txt" in [e.name for e in app.right.backend.listdir("/")])
 
 print("\nquit asks first while transfers are running")
 import time

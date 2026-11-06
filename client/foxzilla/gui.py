@@ -1,10 +1,10 @@
 """The Tk window. Imported lazily, so the rest works with no display at all."""
 from __future__ import annotations
 
+import json
 import os
 import posixpath
 import queue
-import tempfile
 import threading
 import time
 
@@ -12,7 +12,7 @@ from . import config
 from .backends import (Backend, Entry, TransferError, clean_typed_path,
                        make_backend, safe_name)
 from .config import load_secrets, load_sites, needs_password, save_sites
-from .queue import Job, Queue, marker_path
+from .queue import Batch, Job, Queue, marker_path, write_marker
 from .scan import (CLEAR, CONFLICT, IDENTICAL, SAME_SIZE, UNSAFE,
                    plan_transfer, summarise)
 from .scan import WANTED as _WANTED
@@ -142,6 +142,8 @@ class Pane(ttk.Frame):
         super().__init__(master, padding=(4, 4))
         self.app = app
         self.backend: Backend | None = None
+        self.site: dict = {}
+        self.password = ""
         self.path = "/"
         self.entries: list[Entry] = []
 
@@ -239,6 +241,8 @@ class Pane(ttk.Frame):
             if old:
                 threading.Thread(target=old.close, daemon=True).start()
             self.backend = backend
+            # Kept so the queue can open its own connection to the same site.
+            self.site, self.password = dict(site), password
             self.app.log(f"connected: {backend.label}")
             self.chdir(backend.home())
             missing = backend.is_local and backend.start_missing()
@@ -573,7 +577,10 @@ class App:
         self._ui_queue: queue.Queue = queue.Queue()
         self._pending_refresh = None
         self._rows: dict[str, Job] = {}
-        self._pending_markers: list[tuple[Backend, str]] = []
+        # The queue's own connection per site, separate from the panes', so
+        # browsing never shares a connection with a running transfer.
+        self._queue_backends: dict[str, Backend] = {}
+        self._queue_backends_lock = threading.Lock()
         self.queue = Queue(self.on_job_change, workers=8)
 
         self._build_menu()
@@ -799,6 +806,25 @@ class App:
 
     # -- transfers --------------------------------------------------------
 
+    def _queue_backend(self, pane: Pane) -> Backend:
+        """
+        The queue's connection to `pane`'s site, opened on first use.
+
+        Call off the UI thread: it may connect. Local backends hold no
+        connection, so the pane's own is shared.
+        """
+        backend = pane.backend
+        if backend.is_local:
+            return backend
+        key = json.dumps([pane.site, pane.password], sort_keys=True, default=str)
+        with self._queue_backends_lock:
+            mine = self._queue_backends.get(key)
+            if mine is None:
+                mine = make_backend(pane.site, pane.password)
+                mine.connect()
+                self._queue_backends[key] = mine
+        return mine
+
     def transfer(self, src_pane: Pane):
         dst_pane = self.right if src_pane is self.left else self.left
         if not src_pane.backend or not dst_pane.backend:
@@ -815,61 +841,75 @@ class App:
             messagebox.showerror(APP, f"Not transferring: {e}")
             return
 
-        src, dst = src_pane.backend, dst_pane.backend
+        src_browse, dst_browse = src_pane.backend, dst_pane.backend
         dst_root = dst_pane.path
-        pairs = [(src.join(src_pane.path, e.name),
-                  posixpath.join(dst_pane.path, e.name), e.is_dir) for e in sel]
-
-        self._arm_markers(dst, dst_pane.path, [e.name for e in sel])
-
-        if not self.scan_var.get():
-            for (sp, dp, isdir), e in zip(pairs, sel):
-                self.queue.add(Job(src=src, src_path=sp, dst=dst, dst_path=dp,
-                                   is_dir=isdir, size=e.size, dst_root=dst_root))
-            self.log(f"queued {len(sel)} item(s) → {dst.label}")
-            self._pending_refresh = dst_pane
-            return
-
-        self.log(f"scanning {dst.label} for what is already there…")
+        signal = bool(getattr(dst_browse, "signal_complete", False))
+        items = [(e.name, src_browse.join(src_pane.path, e.name),
+                  posixpath.join(dst_root, e.name), e.is_dir, e.size) for e in sel]
+        scan = self.scan_var.get()
+        self.log(f"scanning {dst_browse.label} for what is already there…" if scan
+                 else f"queueing {len(sel)} item(s) → {dst_browse.label}")
 
         def work():
-            plan = []
-            for sp, dp, isdir in pairs:
-                plan += plan_transfer(
+            src = self._queue_backend(src_pane)
+            dst = self._queue_backend(dst_pane)
+            if not scan:
+                return src, dst, None
+            plans = []
+            for name, sp, dp, isdir, _size in items:
+                plans.append((name, plan_transfer(
                     src, sp, dst, dp, isdir,
                     note=lambda n, path: self.post(
                         lambda p=path, n=n: self.log(f"scanned {n} — {posixpath.basename(p)}")
-                        if n and n % 25 == 0 else None))
-            return plan
+                        if n and n % 25 == 0 else None))))
+            return src, dst, plans
 
-        def ready(plan):
+        def ready(result):
+            src, dst, plans = result
+            if plans is None:
+                for name, sp, dp, isdir, size in items:
+                    batch = self._new_batch(name, dst, dst_root) if signal else None
+                    self.queue.add_batch(batch, [Job(src=src, src_path=sp, dst=dst,
+                                                     dst_path=dp, is_dir=isdir, size=size,
+                                                     dst_root=dst_root)])
+                self.log(f"queued {len(items)} item(s) → {dst.label}")
+                self._pending_refresh = dst_pane
+                return
+            plan = [p for _name, item_plan in plans for p in item_plan]
             counts = summarise(plan)
+            if counts[UNSAFE]:
+                self.log(f"refusing {counts[UNSAFE]} item(s) with unsafe names "
+                         "from the server")
             if not counts["files"]:
                 self.log("nothing to transfer")
                 return
             already = counts[IDENTICAL] + counts[SAME_SIZE] + counts[CONFLICT]
-            if counts[UNSAFE]:
-                self.log(f"refusing {counts[UNSAFE]} item(s) with unsafe names "
-                         "from the server")
             if not already and not counts[UNSAFE]:
                 self.log(f"scan: all {counts['files']} file(s) are new "
                          f"({human(counts['bytes'])}) — transferring")
-                self._queue_plan(plan, "all", src, dst_pane, dst_root)
+                self._queue_plan(plans, "all", src, dst, dst_pane, dst_root, signal)
                 return
             dialog = ScanDialog(self.root, plan, dst.label)
             if dialog.choice:
-                self._queue_plan(plan, dialog.choice, src, dst_pane, dst_root)
+                self._queue_plan(plans, dialog.choice, src, dst, dst_pane, dst_root, signal)
             else:
                 self.log("transfer cancelled")
 
         self.run_async(work, ready,
-                       lambda e: self.log(f"scan failed: {e}"))
+                       lambda e: self.log(f"could not start the transfer: {e}"))
 
     WANTED = _WANTED          # defined in scan.py; kept here for callers
 
-    def _queue_plan(self, plan, mode, src, dst_pane, dst_root):
-        """Create the folders the chosen files need, then queue the files."""
+    def _queue_plan(self, plans, mode, src, dst, dst_pane, dst_root, signal):
+        """
+        Create the folders the chosen files need, then queue the files.
+
+        `plans` is one (item name, plan) pair per selected item, so each item
+        gets its own batch - and its own marker, written only when that item
+        is complete.
+        """
         wanted = self.WANTED[mode]
+        plan = [p for _name, item_plan in plans for p in item_plan]
         files = [p for p in plan if not p.is_dir and p.verdict in wanted]
         dirs = [p for p in plan if p.is_dir]
         skipped = sum(1 for p in plan if not p.is_dir and p.verdict not in wanted)
@@ -881,17 +921,25 @@ class App:
         def make_dirs():
             for d in dirs:
                 try:
-                    d.dst_path and dst_pane.backend.mkdir(d.dst_path)
+                    d.dst_path and dst.mkdir(d.dst_path)
                 except Exception:                    # noqa: BLE001
                     pass                             # already exists
-            return files
+            return None
 
-        def queue_them(items):
-            for item in items:
-                self.queue.add(Job(src=src, src_path=item.src_path,
-                                   dst=dst_pane.backend, dst_path=item.dst_path,
-                                   size=item.size, dst_root=dst_root))
-            self.log(f"queued {len(items)} file(s) → {dst_pane.backend.label}"
+        def queue_them(_):
+            for name, item_plan in plans:
+                batch = self._new_batch(name, dst, dst_root) if signal else None
+                if batch is not None:
+                    left_out = [p for p in item_plan if not p.is_dir
+                                and p.verdict in (CONFLICT, UNSAFE) and p.verdict not in wanted]
+                    if left_out:
+                        batch.taint(f"{len(left_out)} file(s) differ at the destination "
+                                    "or were refused, and were not sent")
+                self.queue.add_batch(batch, [
+                    Job(src=src, src_path=p.src_path, dst=dst, dst_path=p.dst_path,
+                        size=p.size, dst_root=dst_root)
+                    for p in item_plan if not p.is_dir and p.verdict in wanted])
+            self.log(f"queued {len(files)} file(s) → {dst.label}"
                      + (f", skipped {skipped} already there" if skipped else ""))
             self._pending_refresh = dst_pane
 
@@ -939,54 +987,33 @@ class App:
                 if pane:
                     pane.refresh()
                     self._pending_refresh = None
-                self._signal_complete()
                 self.log("queue idle")
 
     # -- completion signal ------------------------------------------------
 
-    def _arm_markers(self, dst, directory, names):
-        """Remember to tell a drop folder when these items are safely there."""
-        if not getattr(dst, "signal_complete", False):
-            return
-        for name in names:
-            self._pending_markers.append((dst, marker_path(directory, name)))
+    def _new_batch(self, name, dst, directory):
+        """A batch for one item sent to a drop folder; its marker is its reward."""
+        return Batch(name, on_done=lambda b: self.post(self._batch_done, b),
+                     dst=dst, marker=marker_path(directory, name))
 
-    def _signal_complete(self):
+    def _batch_done(self, batch):
         """
-        Drop a marker beside each finished item, so the far side can act now.
+        Drop a marker beside a finished item, so the far side can act now.
 
-        Only once the queue has drained with nothing failed - a marker means
-        "this is complete and verified", and writing one after a partial
-        transfer would be worse than not writing one at all. The watcher
-        re-hashes everything regardless, so the marker saves time, it does not
-        replace the check.
+        Only for an item whose every job finished and none failed or was
+        cancelled - a marker means "this is complete and verified", and one
+        written after a partial transfer would be worse than none at all.
+        The watcher re-hashes everything regardless, so the marker saves time,
+        it does not replace the check.
         """
-        pending, self._pending_markers = self._pending_markers, []
-        if not pending:
+        if not batch.ok:
+            self.log(f"not marking {batch.name} complete — {batch.reason}")
             return
-        if any(j.state == "failed" for j in self.queue.jobs):
-            self.log("not signalling completion — some transfers failed")
-            return
-
-        def work():
-            fd, tmp = tempfile.mkstemp(prefix=f".{APP}-marker-")
-            os.write(fd, f"verified by {APP} {VERSION}\n".encode())
-            os.close(fd)
-            try:
-                for backend, path in pending:
-                    backend.write_from(tmp, path)
-            finally:
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-            return len(pending)
-
         self.run_async(
-            work,
-            lambda n: self.log(f"signalled {n} completed upload(s) — "
-                               "the watcher can pick them up immediately"),
-            lambda e: self.log(f"could not signal completion: {e}"))
+            lambda: write_marker(batch.dst, batch.marker),
+            lambda _: self.log(f"signalled {batch.name} complete — "
+                               "the watcher can pick it up immediately"),
+            lambda e: self.log(f"could not signal completion of {batch.name}: {e}"))
 
     # -- priority ---------------------------------------------------------
 
@@ -1050,4 +1077,7 @@ class App:
         self.root.destroy()
 
     def _open_backends(self):
-        return [p.backend for p in (self.left, self.right) if p.backend]
+        with self._queue_backends_lock:
+            mine = list(self._queue_backends.values())
+            self._queue_backends.clear()
+        return [p.backend for p in (self.left, self.right) if p.backend] + mine
