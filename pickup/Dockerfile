@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY media_pickup.py /app/media_pickup.py
+COPY foxzilla_pickup /app/foxzilla_pickup
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/media_pickup.py /app/docker-entrypoint.sh
 

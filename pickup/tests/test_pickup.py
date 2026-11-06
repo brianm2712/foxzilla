@@ -11,6 +11,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(os.path.dirname(HERE), "media_pickup.py")
 sys.path.insert(0, os.path.dirname(HERE))
 import media_pickup as MP
+# WHERE TO PATCH: the code lives in the foxzilla_pickup package and
+# media_pickup only re-exports it. Assigning MP.<name> rebinds the shim's copy
+# and nothing in the package sees it, so a patch there silently does nothing.
+# Patch the module that looks the name up:
+#   common.sha256_file / same_filesystem / free_bytes   (callers use common.<name>)
+#   handoff.reconcile / process_item / abandoned_staging / MIN_FEATURE_BYTES
+#   disc.FFMPEG / FFPROBE
+#   jellyfin.jf_movie_lookup / cmd_whoami / jf_authenticate / CRED_FILE
+# Reading MP.<name> (functions, constants) is fine.
+from foxzilla_pickup import common, disc, handoff, jellyfin
 
 PASS, FAIL = [], []
 
@@ -110,7 +120,7 @@ check("clashing file quarantined", os.path.isdir(q) and videos_under(q), videos_
 # ---------------------------------------------------------------- bug 4
 print("\nbug_4_multimovie_pack_rmtree  (v1: shutil.rmtree deleted everything small)")
 e = Env()
-MP.MIN_FEATURE_BYTES = 10000          # real features are GB-sized; scale for the test
+handoff.MIN_FEATURE_BYTES = 10000          # real features are GB-sized; scale for the test
 pack = os.path.join(e.upload, "Star Wars Trilogy")
 mkfile(os.path.join(pack, "A New Hope.mkv"), 40000)
 mkfile(os.path.join(pack, "Empire Strikes Back.mkv"), 40000)
@@ -125,7 +135,7 @@ check("three features split out",
 check("small extra NOT deleted", any("behind the scenes" in p for p in all_files), all_files)
 check("artwork NOT deleted", any("poster.jpg" in p for p in all_files))
 check("unclaimed files kept in _leftovers", any("_leftovers" in p for p in all_files), all_files)
-MP.MIN_FEATURE_BYTES = 200 * 1024 * 1024
+handoff.MIN_FEATURE_BYTES = 200 * 1024 * 1024
 
 # ---------------------------------------------------------------- bug 5
 print("\nbug_5_dvd_rip_misclassified  (v1: no episode markers -> movie path -> deleted)")
@@ -167,10 +177,10 @@ check("logged as in progress", any("still in progress" in l for l in e.tail(5)))
 print("\nbug_8_failure_leaves_source_intact")
 e = Env()
 mkfile(os.path.join(e.upload, "Fragile", "film.mkv"), 4096)
-real_reconcile = MP.reconcile
-MP.reconcile = lambda *a, **k: (_ for _ in ()).throw(MP.PickupError("simulated verification failure"))
+real_reconcile = handoff.reconcile
+handoff.reconcile = lambda *a, **k: (_ for _ in ()).throw(MP.PickupError("simulated verification failure"))
 e.run()
-MP.reconcile = real_reconcile
+handoff.reconcile = real_reconcile
 check("source still present after failure", os.path.exists(os.path.join(e.upload, "Fragile", "film.mkv")))
 check("failure logged as such", any("FAILED, source left intact" in l for l in e.tail(6)))
 e.run()
@@ -180,14 +190,14 @@ check("retry succeeds after the fault clears", videos_under(e.movies) != [])
 print("\nbug_9_corruption_detected_in_staging")
 e = Env()
 mkfile(os.path.join(e.upload, "Bitrot", "film.mkv"), 8192)
-real_sha = MP.sha256_file
+real_sha = common.sha256_file
 calls = {"n": 0}
 def flaky(path, hasher=None, on_chunk=None):
     calls["n"] += 1
     return "0" * 64 if calls["n"] == 2 else real_sha(path, hasher, on_chunk)
-MP.sha256_file = flaky
+common.sha256_file = flaky
 e.run()
-MP.sha256_file = real_sha
+common.sha256_file = real_sha
 check("hash mismatch aborts the handoff", os.path.exists(os.path.join(e.upload, "Bitrot", "film.mkv")))
 check("mismatch reported", any("verification failed" in l or "FAILED" in l for l in e.tail(6)))
 
@@ -290,17 +300,17 @@ print("\na marker written too early costs a failed run, never data")
 e = Env()
 mkfile(os.path.join(e.upload, "Early", "a.mkv"), 4096)
 open(MP.marker_for(e.upload, "Early"), "w").write("done")
-real = MP.reconcile
-MP.reconcile = lambda *a, **k: (_ for _ in ()).throw(MP.PickupError("verification failed"))
+real = handoff.reconcile
+handoff.reconcile = lambda *a, **k: (_ for _ in ()).throw(MP.PickupError("verification failed"))
 e.run(force=False)
-MP.reconcile = real
+handoff.reconcile = real
 check("source survives a premature marker", os.path.exists(os.path.join(e.upload, "Early", "a.mkv")))
 check("failure reported", any("FAILED, source left intact" in l for l in e.tail(6)))
 
 # ---------------------------------------------------------------- same-named copies
 print("\nsame_named_copies_in_a_pack  (2026-10-26: Toy Story 2 arrived x4, the copies clobbered each other -> '3 missing', retried hourly)")
 e = Env()
-MP.MIN_FEATURE_BYTES = 10000
+handoff.MIN_FEATURE_BYTES = 10000
 pack = os.path.join(e.upload, "Toy.Story.2.1999.REMUX")
 full = os.urandom(40000)
 mkfile(os.path.join(pack, "Toy.Story.2.1999.REMUX.mkv"), content=full[:35000])       # top-level copy, truncated
@@ -315,12 +325,12 @@ check("pack with four same-named copies hands off",
 check("the largest copy is the feature", os.path.exists(feature) and os.path.getsize(feature) == 40000)
 check("the other copies are kept, not clobbered", len(all_mkv) == 4, all_mkv)
 check("duplicates land in _leftovers", sum(1 for p in all_mkv if "_leftovers" in p) == 3, all_mkv)
-MP.MIN_FEATURE_BYTES = 200 * 1024 * 1024
+handoff.MIN_FEATURE_BYTES = 200 * 1024 * 1024
 
 # ---------------------------------------------------------------- same-named extras
 print("\nsame_named_extras_in_a_movie  (same clobber class on the single-feature path: extras/ flattens names)")
 e = Env()
-MP.MIN_FEATURE_BYTES = 10000
+handoff.MIN_FEATURE_BYTES = 10000
 pack = os.path.join(e.upload, "Warrior (2011)")
 mkfile(os.path.join(pack, "Warrior.mkv"), 40000)
 mkfile(os.path.join(pack, "Featurettes", "sample.mkv"), 500)
@@ -330,7 +340,7 @@ extras = sorted(os.listdir(os.path.join(e.movies, "Warrior (2011)", "extras"))) 
 check("movie with two same-named extras hands off",
       not any("FAILED" in l for l in e.tail(12)) and videos_under(e.upload) == [], e.tail(4))
 check("both extras survive under distinct names", len(extras) == 2, extras)
-MP.MIN_FEATURE_BYTES = 200 * 1024 * 1024
+handoff.MIN_FEATURE_BYTES = 200 * 1024 * 1024
 
 # ---------------------------------------------------------------- disc label
 print("\ndisc label -> title")
@@ -377,7 +387,7 @@ def ffstubs(base, titles, fail=False):
                  "if %r: print('bad disc', file=sys.stderr); sys.exit(1)\n"
                  "open(sys.argv[-1],'wb').write(b'MKV'*5000)\n" % (calls, fail))
     for p in (probe, enc): os.chmod(p, 0o755)
-    MP.FFPROBE, MP.FFMPEG = probe, enc
+    disc.FFPROBE, disc.FFMPEG = probe, enc
     return calls
 
 print("\ntitle scan: longest wins, a dead title in the middle is skipped")
@@ -394,12 +404,12 @@ try:
     MP.remux_title("x.iso", 1, out); check("ffmpeg failure raises", False)
 except MP.PickupError as err:
     check("ffmpeg failure raises with stderr", "bad disc" in str(err), err)
-MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+disc.FFMPEG, disc.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 
 # ---------------------------------------------------------------- disc images
 print("\ndisc_images_are_held_when_ffmpeg_is_missing  (the 2026-10-26 behaviour, kept for images without ffmpeg)")
 e = Env()
-MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+disc.FFMPEG, disc.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 mkiso(os.path.join(e.upload, "MY_LEFT_FOOT.iso"), "MY_LEFT_FOOT")
 mkfile(os.path.join(e.upload, "Bluey", "Bluey S01E01.mkv"), 4096)
 e.run(); e.run()
@@ -413,7 +423,7 @@ check("other uploads still flow", videos_under(e.shows) != [])
 print("\ndvd_iso_is_remuxed_and_filed  (2026-10-26: the three held DVD rips)")
 e = Env()
 calls = ffstubs(e.base, {1: 13.0, 2: 5927.5})
-MP.jf_movie_lookup = lambda host, creds, title, log: ("My Left Foot", 1989)
+jellyfin.jf_movie_lookup = lambda host, creds, title, log: ("My Left Foot", 1989)
 mkiso(os.path.join(e.upload, "MY_LEFT_FOOT.iso"), "MY_LEFT_FOOT")
 e.run()
 today = ".removed-" + time.strftime("%Y%m%d")
@@ -431,7 +441,7 @@ check("no 'holding' line", not any("holding" in l for l in open(e.log).read().sp
 print("\na .name file beside the iso wins outright")
 e = Env()
 ffstubs(e.base, {1: 48.0, 2: 5456.0})
-MP.jf_movie_lookup = lambda *a: (_ for _ in ()).throw(AssertionError("lookup must not run"))
+jellyfin.jf_movie_lookup = lambda *a: (_ for _ in ()).throw(AssertionError("lookup must not run"))
 mkiso(os.path.join(e.upload, "BBCDVD3090.iso"), "BBCDVD3090")
 mkfile(os.path.join(e.upload, "BBCDVD3090.iso.name"), content=b"The Snapper (1993)\n")
 e.run()
@@ -442,7 +452,7 @@ check("the .name file was never treated as an upload", not any("BBCDVD3090.iso.n
 print("\nlookup failure -> label only, warned, not fatal")
 e = Env()
 ffstubs(e.base, {1: 100.0})
-MP.jf_movie_lookup = lambda *a: (_ for _ in ()).throw(OSError("jellyfin down"))
+jellyfin.jf_movie_lookup = lambda *a: (_ for _ in ()).throw(OSError("jellyfin down"))
 mkiso(os.path.join(e.upload, "LES_MISERABLES.iso"), "LES_MISERABLES")
 e.run()
 check("filed under the title-cased label", os.path.isdir(os.path.join(e.movies, "Les Miserables")), os.listdir(e.movies))
@@ -451,7 +461,7 @@ check("warned about the missing year", any("WARN" in l and "year" in l for l in 
 print("\nffmpeg failure: iso stays, warned once, not retried every tick")
 e = Env()
 calls = ffstubs(e.base, {1: 100.0}, fail=True)
-MP.jf_movie_lookup = lambda *a: None
+jellyfin.jf_movie_lookup = lambda *a: None
 mkiso(os.path.join(e.upload, "BAD.iso"), "BAD")
 e.run(); e.run(); e.run()
 check("iso still in the inbox", os.path.exists(os.path.join(e.upload, "BAD.iso")))
@@ -463,7 +473,7 @@ mkfile(os.path.join(e.upload, "BAD.iso.name"), content=b"Fixed (2000)\n")
 ffstubs(e.base, {1: 100.0})
 e.run()
 check("a .name file appearing retries the conversion", os.path.isdir(os.path.join(e.movies, "Fixed (2000)")), os.listdir(e.movies))
-MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+disc.FFMPEG, disc.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 
 # ---------------------------------------------------------------- progress reporter
 print("\nprogress: throttled, atomic, rate/eta from a rolling window")
@@ -567,13 +577,13 @@ item = os.path.join(e.upload, "Pack")
 mkfile(os.path.join(item, "a.mkv"), size=MP.CHUNK + 10); mkfile(os.path.join(item, "b.mkv"), size=300)
 m = MP.build_manifest(item, lambda *a, **k: None)
 r = Rec()
-_orig_sf, _orig_fb = MP.same_filesystem, MP.free_bytes
-MP.same_filesystem = lambda a, b: False
-MP.free_bytes = lambda p: 10 ** 12
+_orig_sf, _orig_fb = common.same_filesystem, common.free_bytes
+common.same_filesystem = lambda a, b: False
+common.free_bytes = lambda p: 10 ** 12
 try:
     MP.stage(item, m, os.path.join(e.shows, ".staging", "t2"), lambda *a, **k: None, progress=r)
 finally:
-    MP.same_filesystem, MP.free_bytes = _orig_sf, _orig_fb
+    common.same_filesystem, common.free_bytes = _orig_sf, _orig_fb
 check("copy path phase is copying", r.phases[-1] == ("Pack", "copying", "bytes"), r.phases)
 check("copy path reaches total exactly", r.done == r.total == m["total_bytes"], (r.done, r.total))
 
@@ -584,7 +594,7 @@ mkfile(os.path.join(e.upload, "Show S01", "Show.S01E02.mkv"), size=500)
 r = Rec()
 cfg = dict(MP.DEFAULTS, upload_dir=e.upload, movies_dest=e.movies, shows_dest=e.shows,
            receipts_dir=e.receipts)
-MP.process_item(cfg, "Show S01", lambda *a, **k: None, progress=r)
+handoff.process_item(cfg, "Show S01", lambda *a, **k: None, progress=r)
 check("phases in order", [p for _, p, _ in r.phases] == ["hashing", "verifying", "committing"], r.phases)
 
 print("\nprogress: hardening (nothing escapes, monotonic pacing, inert null instance)")
@@ -658,13 +668,13 @@ with open(enc, "w") as fh:
              "print('out_time_us=3500000'); print('progress=end')\n"
              "print('a warning', file=sys.stderr)\n"
              "open(sys.argv[-1],'wb').write(b'MKV'*10)\n")
-os.chmod(enc, 0o755); MP.FFMPEG = enc
+os.chmod(enc, 0o755); disc.FFMPEG = enc
 seen = []
 out = os.path.join(e.base, "out.mkv")
 MP.remux_title("x.iso", 1, out, on_time=seen.append)
 check("out_time parsed in seconds, N/A skipped", seen == [1.0, 3.5], seen)
 check("output still written", os.path.getsize(out) == 30)
-MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+disc.FFMPEG, disc.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 
 print("\nprogress: a run writes the queue and ends idle with last")
 e = Env()
@@ -683,13 +693,13 @@ check("filed film is not in the queue", "Film (2020).mkv" not in rows, doc["queu
 print("\nprogress: a failed item shows its error in the queue")
 e = Env()
 sp = os.path.join(e.base, "status.json")
-real_pi = MP.process_item
-MP.process_item = lambda *a, **k: (_ for _ in ()).throw(MP.PickupError("boom"))
+real_pi = handoff.process_item
+handoff.process_item = lambda *a, **k: (_ for _ in ()).throw(MP.PickupError("boom"))
 try:
     mkfile(os.path.join(e.upload, "Broken (2001).mkv"), size=100)
     e.run("--status-file", sp)
 finally:
-    MP.process_item = real_pi
+    handoff.process_item = real_pi
 doc = json.load(open(sp))
 rows = {r["name"]: r for r in doc["queue"]}
 check("failed row with error", rows.get("Broken (2001).mkv", {}).get("state") == "failed"
@@ -719,10 +729,10 @@ print("\nprogress: an iso converted and filed in one tick")
 e = Env()
 sp = os.path.join(e.base, "status.json")
 ffstubs(e.base, {1: 100.0})
-MP.jf_movie_lookup = lambda *a: None
+jellyfin.jf_movie_lookup = lambda *a: None
 mkiso(os.path.join(e.upload, "TEST_DISC.iso"), "TEST_DISC")
 e.run("--status-file", sp)
-MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+disc.FFMPEG, disc.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 doc = json.load(open(sp))
 check("the mkv was filed", os.path.isdir(os.path.join(e.movies, "Test Disc")), os.listdir(e.movies))
 check("last is the filed mkv item", doc["last"]["name"] == "Test Disc" and doc["last"]["result"] == "ok", doc["last"])
@@ -744,7 +754,7 @@ enc = os.path.join(e.base, "bin", "ffmpeg")
 with open(enc, "w") as fh:
     fh.write("#!/usr/bin/env python3\nimport time,sys\n"
              "print('out_time_us=1000000', flush=True)\ntime.sleep(30)\n")
-os.chmod(enc, 0o755); MP.FFMPEG = enc
+os.chmod(enc, 0o755); disc.FFMPEG = enc
 def boom(_s): raise RuntimeError("boom")
 t0 = time.monotonic(); raised = None
 try:
@@ -754,7 +764,7 @@ except RuntimeError as ex:
 dt = time.monotonic() - t0
 check("RuntimeError propagates", raised is not None and str(raised) == "boom", raised)
 check("returned without waiting for ffmpeg", dt < 10, dt)
-MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+disc.FFMPEG, disc.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 
 print("\nreview fixes: Progress.touch keeps the card fresh")
 e = Env()
@@ -883,7 +893,7 @@ print("\none_item_per_run: an iso conversion plus filing its mkv is the one item
 e = Env()
 sp = os.path.join(e.base, "status.json")
 ffstubs(e.base, {1: 100.0})
-MP.jf_movie_lookup = lambda *a: None
+jellyfin.jf_movie_lookup = lambda *a: None
 mkiso(os.path.join(e.upload, "AAA_DISC.iso"), "AAA_DISC")
 mkfile(os.path.join(e.upload, "Bravo (2003).mkv"), 2048)
 e.run("--status-file", sp)
@@ -902,7 +912,7 @@ check("a failed conversion counts as the run's attempt", os.path.exists(os.path.
 e.run()
 check("next run files the other item", os.path.isdir(os.path.join(e.movies, "Bravo (2003)")), os.listdir(e.movies))
 check("the failed disc was not retried", open(calls).read().count("\n") == 1, open(calls).read())
-MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+disc.FFMPEG, disc.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 
 print("\nabandoned_staging: old staging dirs are reported, never deleted")
 e = Env()
@@ -953,24 +963,25 @@ e = Env()
 os.makedirs(os.path.join(e.movies, ".staging"))
 d = os.path.join(e.movies, ".staging", "9-1")
 mkfile(os.path.join(d, "x"), 7); os.utime(d, (two_days, two_days))
-found = MP.abandoned_staging({"movies_dest": e.movies, "shows_dest": e.movies})
+found = handoff.abandoned_staging({"movies_dest": e.movies, "shows_dest": e.movies})
 check("same dest root scanned once", len(found) == 1 and found[0]["bytes"] == 7, found)
-real_walk = MP.os.walk
-MP.os.walk = lambda *a, **k: (_ for _ in ()).throw(OSError("nas gone"))
+real_walk = handoff.os.walk
+handoff.os.walk = lambda *a, **k: (_ for _ in ()).throw(OSError("nas gone"))
 try:
-    found = MP.abandoned_staging({"movies_dest": e.movies, "shows_dest": e.shows})
+    found = handoff.abandoned_staging({"movies_dest": e.movies, "shows_dest": e.shows})
 finally:
-    MP.os.walk = real_walk
+    handoff.os.walk = real_walk
 check("unreadable dir tolerated (bytes 0)", len(found) == 1 and found[0]["bytes"] == 0, found)
-real_ab = MP.abandoned_staging
-MP.abandoned_staging = lambda cfg: (_ for _ in ()).throw(RuntimeError("scan boom"))
+real_ab = handoff.abandoned_staging
+handoff.abandoned_staging = lambda cfg: (_ for _ in ()).throw(RuntimeError("scan boom"))
 try:
     mkfile(os.path.join(e.upload, "Ok (2019).mkv"), 2000)
     rc = e.run()
 finally:
-    MP.abandoned_staging = real_ab
+    handoff.abandoned_staging = real_ab
 check("a failing scan never breaks the run", rc == 0 and os.path.isdir(os.path.join(e.movies, "Ok (2019)")), e.tail(5))
-check("and logs a WARN", any("WARN" in l and "staging" in l for l in e.tail(20)), e.tail(8))
+check("and logs a WARN", any("WARN" in l and "could not check abandoned staging" in l and "scan boom" in l
+                             for l in e.tail(20)), e.tail(8))
 nul = MP.Progress(""); nul.staging([{"path": "x"}])
 check("Progress.staging inert without path", "staging" not in nul.doc and nul.writes == 0)
 
@@ -1016,14 +1027,14 @@ try:
     check("env STATUS_FILE stale -> 1", MP.main(["--health"]) == 1)
     os.environ.pop("STATUS_FILE", None)
     calls = []
-    real_who = MP.cmd_whoami
-    MP.cmd_whoami = lambda: calls.append(1) or 0
+    real_who = jellyfin.cmd_whoami
+    jellyfin.cmd_whoami = lambda: calls.append(1) or 0
     try:
         rc = MP.main(["--health"])
         os.environ["STATUS_FILE"] = ""
         rc2 = MP.main(["--health"])
     finally:
-        MP.cmd_whoami = real_who
+        jellyfin.cmd_whoami = real_who
     check("no status path -> falls back to whoami", rc == 0 and rc2 == 0 and len(calls) == 2, calls)
 finally:
     os.environ.pop("STATUS_FILE", None)
