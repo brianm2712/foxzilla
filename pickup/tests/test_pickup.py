@@ -645,6 +645,26 @@ rows = [{"name": "Q", "state": "waiting"}]
 q = MP.Progress(os.path.join(e.base, "q.json")); q.queue(rows); rows[0]["name"] = "changed"
 check("queue stores copies", q.doc["queue"][0]["name"] == "Q", q.doc["queue"])
 
+print("\nprogress: remux reads ffmpeg's -progress stream")
+e = Env()
+ffstubs(e.base, {1: 100.0})
+enc = os.path.join(e.base, "bin", "ffmpeg")
+with open(enc, "w") as fh:
+    fh.write("#!/usr/bin/env python3\nimport sys\n"
+             "assert '-progress' in sys.argv and sys.argv[sys.argv.index('-progress')+1] == 'pipe:1'\n"
+             "print('out_time_us=1000000'); print('progress=continue')\n"
+             "print('out_time_us=N/A')\n"
+             "print('out_time_us=3500000'); print('progress=end')\n"
+             "print('a warning', file=sys.stderr)\n"
+             "open(sys.argv[-1],'wb').write(b'MKV'*10)\n")
+os.chmod(enc, 0o755); MP.FFMPEG = enc
+seen = []
+out = os.path.join(e.base, "out.mkv")
+MP.remux_title("x.iso", 1, out, on_time=seen.append)
+check("out_time parsed in seconds, N/A skipped", seen == [1.0, 3.5], seen)
+check("output still written", os.path.getsize(out) == 30)
+MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]

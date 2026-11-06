@@ -1027,14 +1027,27 @@ def longest_title(found):
     return max(found, key=lambda t: t[1]) if found else None
 
 
-def remux_title(iso, title_no, out_path):
+def remux_title(iso, title_no, out_path, on_time=None):
     """Lossless: the title's video, every audio and subtitle stream, chapters."""
-    cmd = [FFMPEG, "-nostdin", "-y", "-v", "error", "-f", "dvdvideo", "-title", str(title_no),
+    cmd = [FFMPEG, "-nostdin", "-y", "-v", "error", "-progress", "pipe:1", "-nostats",
+           "-f", "dvdvideo", "-title", str(title_no),
            "-i", iso, "-map", "0", "-c", "copy", "-f", "matroska", out_path]
-    p = subprocess.run(cmd, capture_output=True, text=True)
-    if p.returncode != 0:
-        tail = " | ".join(l for l in p.stderr.strip().splitlines()[-5:] if l.strip())
-        raise PickupError(f"ffmpeg failed (rc {p.returncode}): {tail or 'no output'}")
+    # stderr goes to a file, not a pipe: reading stdout to the end while
+    # stderr fills its pipe buffer would deadlock ffmpeg.
+    with tempfile.TemporaryFile(mode="w+") as err:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, text=True)
+        for line in p.stdout:
+            if on_time and line.startswith("out_time_us="):
+                try:
+                    on_time(int(line.split("=", 1)[1]) / 1e6)
+                except ValueError:
+                    pass
+        rc = p.wait()
+        err.seek(0)
+        stderr = err.read()
+    if rc != 0:
+        tail = " | ".join(l for l in stderr.strip().splitlines()[-5:] if l.strip())
+        raise PickupError(f"ffmpeg failed (rc {rc}): {tail or 'no output'}")
     if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
         raise PickupError("ffmpeg produced no output")
 
@@ -1092,7 +1105,7 @@ def disc_item_name(cfg, iso, log):
     return movie_item_name(*match), f"label + Jellyfin: {match[0]} ({match[1]})"
 
 
-def convert_disc_image(cfg, name, log):
+def convert_disc_image(cfg, name, log, progress=NULL_PROGRESS):
     """
     Remux a DVD image in the inbox into an MKV item the handoff will file.
 
@@ -1120,7 +1133,8 @@ def convert_disc_image(cfg, name, log):
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     try:
-        remux_title(iso, best[0], os.path.join(work, item + ".mkv"))
+        progress.begin(name, "remuxing", best[1], unit="seconds")
+        remux_title(iso, best[0], os.path.join(work, item + ".mkv"), on_time=progress.set_done)
     except Exception:
         shutil.rmtree(work, ignore_errors=True)
         raise
