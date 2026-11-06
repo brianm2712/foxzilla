@@ -332,7 +332,7 @@ def acquire_lock(path):
 # hashing and manifests
 # --------------------------------------------------------------------------
 
-def sha256_file(path, hasher=None):
+def sha256_file(path, hasher=None, on_chunk=None):
     h = hasher or hashlib.sha256()
     with open(path, "rb") as fh:
         while True:
@@ -340,6 +340,8 @@ def sha256_file(path, hasher=None):
             if not buf:
                 break
             h.update(buf)
+            if on_chunk:
+                on_chunk(len(buf))
     return h.hexdigest()
 
 
@@ -387,17 +389,22 @@ def observe(root):
     }
 
 
-def build_manifest(root, log):
+def build_manifest(root, log, progress=NULL_PROGRESS):
     """Phase 1. The contract: what must exist at the destination when we finish."""
+    found = walk_files(root)
+    sizes = {rel: os.stat(full).st_size for rel, full in found}
+    progress.begin(os.path.basename(root.rstrip("/")), "hashing",
+                   sum(sizes.values()), files_total=len(found))
     files = []
-    for rel, full in walk_files(root):
+    for rel, full in found:
         st = os.stat(full)
         files.append({
             "path": rel,
             "size": st.st_size,
             "mtime": st.st_mtime,
-            "sha256": sha256_file(full),
+            "sha256": sha256_file(full, on_chunk=lambda n, rel=rel: progress.advance(n, rel)),
         })
+        progress.file_done(rel)
     total = sum(f["size"] for f in files)
     log(f"  phase 1: manifest built - {len(files)} files, {human(total)}")
     return {

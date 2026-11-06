@@ -182,9 +182,9 @@ e = Env()
 mkfile(os.path.join(e.upload, "Bitrot", "film.mkv"), 8192)
 real_sha = MP.sha256_file
 calls = {"n": 0}
-def flaky(path, hasher=None):
+def flaky(path, hasher=None, on_chunk=None):
     calls["n"] += 1
-    return "0" * 64 if calls["n"] == 2 else real_sha(path, hasher)
+    return "0" * 64 if calls["n"] == 2 else real_sha(path, hasher, on_chunk)
 MP.sha256_file = flaky
 e.run()
 MP.sha256_file = real_sha
@@ -519,6 +519,29 @@ print("\nprogress: an empty path is a no-op")
 nul = MP.Progress("")
 nul.begin("A", "copying", 10); nul.advance(5); nul.finish("A", "ok"); nul.idle()
 check("no writes", nul.writes == 0)
+
+class Rec:
+    """A stand-in Progress that remembers what it was told."""
+    def __init__(self): self.phases = []; self.done = 0; self.files = 0; self.total = None; self.files_total = None
+    def begin(self, name, phase, total, unit="bytes", files_total=None):
+        self.phases.append((name, phase, unit)); self.total = total; self.files_total = files_total
+        self.done = 0; self.files = 0
+    def advance(self, n, file=None): self.done += n
+    def set_done(self, d, file=None): self.done = d
+    def file_done(self, file=None): self.files += 1
+    def queue(self, rows): pass
+    def finish(self, *a, **k): pass
+    def idle(self): pass
+
+print("\nprogress: hashing reports every byte and every file")
+e = Env()
+item = os.path.join(e.upload, "Pack")
+mkfile(os.path.join(item, "a.mkv"), size=MP.CHUNK + 10); mkfile(os.path.join(item, "b.mkv"), size=300)
+r = Rec()
+m = MP.build_manifest(item, lambda *a, **k: None, progress=r)
+check("hashing phase begun for the item", r.phases == [("Pack", "hashing", "bytes")], r.phases)
+check("hashed bytes == total", r.done == r.total == m["total_bytes"], (r.done, r.total))
+check("files counted", r.files == r.files_total == 2, (r.files, r.files_total))
 
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
