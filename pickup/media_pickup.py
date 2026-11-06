@@ -70,6 +70,7 @@ DEFAULTS = {
     "receipts_dir": "/data/receipts",
     "jellyfin_host": "jellyfin:8096",
     "park_dir": "",        # where .removed-YYYYMMDD/ goes; empty = the upload dir
+    "status_file": "",     # live progress JSON for the dashboard; empty = off
 }
 
 # Credentials are resolved at runtime (env, then a 0600 config file) so that no
@@ -174,6 +175,136 @@ class Log:
                 fh.write(line + "\n")
         except OSError:
             pass
+
+
+# --------------------------------------------------------------------------
+# progress reporting (the dashboard's pickup card reads this file)
+# --------------------------------------------------------------------------
+
+class Progress:
+    """
+    Owns status.json: the active item's phase and progress, the inbox queue,
+    and the last finished item. Writes are atomic (tmp + os.replace) and
+    throttled. A write failure is logged once and otherwise ignored: the meter
+    must never be the reason a handoff fails.
+    """
+    THROTTLE = 2.0      # seconds between progress writes
+    WINDOW = 30.0       # rolling window for the rate
+    MIN_SPAN = 5.0      # no rate until the samples span this long
+
+    def __init__(self, path, clock=time.time, log=None):
+        self.path, self.clock, self.log = path, clock, log
+        self.writes = 0
+        self._last_write = None
+        self._samples = []
+        self._failing = False
+        self.doc = {"version": 1, "updated": None, "state": "idle",
+                    "active": None, "queue": [], "last": self._read_last()}
+
+    def _read_last(self):
+        if not self.path:
+            return None
+        try:
+            with open(self.path) as fh:
+                return json.load(fh).get("last")
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def queue(self, rows):
+        active = (self.doc["active"] or {}).get("name")
+        self.doc["queue"] = [r for r in rows if r.get("name") != active]
+
+    def begin(self, name, phase, total, unit="bytes", files_total=None):
+        now = self.clock()
+        prev = self.doc["active"] or {}
+        self.doc["state"] = "active"
+        self.doc["active"] = {
+            "name": name, "phase": phase, "unit": unit,
+            "done": 0, "total": total, "file": None,
+            "files_done": 0, "files_total": files_total,
+            "rate": None, "eta_s": None, "phase_started": now,
+            "item_started": prev.get("item_started", now) if prev.get("name") == name else now,
+        }
+        self.doc["queue"] = [r for r in self.doc["queue"] if r.get("name") != name]
+        self._samples = [(now, 0)]
+        self._write(force=True)
+
+    def advance(self, n, file=None):
+        a = self.doc["active"]
+        if a:
+            self.set_done(a["done"] + n, file)
+
+    def set_done(self, done, file=None):
+        a = self.doc["active"]
+        if not a:
+            return
+        a["done"] = done
+        if file is not None:
+            a["file"] = file
+        self._write()
+
+    def file_done(self, file=None):
+        a = self.doc["active"]
+        if not a:
+            return
+        a["files_done"] += 1
+        if a["unit"] == "files":
+            a["done"] = a["files_done"]
+        if file is not None:
+            a["file"] = file
+        self._write()
+
+    def finish(self, name, result, error=None):
+        self.doc["active"] = None
+        self.doc["state"] = "idle"
+        self.doc["last"] = {"name": name, "result": result,
+                            "finished": self.clock(), "error": error}
+        self._write(force=True)
+
+    def idle(self):
+        self.doc["active"] = None
+        self.doc["state"] = "idle"
+        self._write(force=True)
+
+    def _rate(self, now):
+        a = self.doc["active"]
+        if not a or a["unit"] == "files":
+            return
+        self._samples.append((now, a["done"]))
+        while len(self._samples) > 2 and self._samples[0][0] < now - self.WINDOW:
+            self._samples.pop(0)
+        (t0, d0), (t1, d1) = self._samples[0], self._samples[-1]
+        if t1 - t0 < self.MIN_SPAN:
+            a["rate"], a["eta_s"] = None, None
+            return
+        rate = (d1 - d0) / (t1 - t0)
+        a["rate"] = round(rate, 3)
+        a["eta_s"] = round((a["total"] - a["done"]) / rate, 1) if rate > 0 else None
+
+    def _write(self, force=False):
+        if not self.path:
+            return
+        now = self.clock()
+        if not force and self._last_write is not None and now - self._last_write < self.THROTTLE:
+            return
+        self._last_write = now
+        self._rate(now)
+        self.doc["updated"] = now
+        tmp = self.path + ".tmp"
+        try:
+            with open(tmp, "w") as fh:
+                json.dump(self.doc, fh)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, self.path)
+            self.writes += 1
+            self._failing = False
+        except OSError as e:
+            if not self._failing and self.log:
+                self.log(f"could not write status file {self.path}: {e}", "WARN")
+            self._failing = True
+
+
+NULL_PROGRESS = Progress("")
 
 
 def acquire_lock(path):

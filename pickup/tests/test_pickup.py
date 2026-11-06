@@ -465,6 +465,61 @@ e.run()
 check("a .name file appearing retries the conversion", os.path.isdir(os.path.join(e.movies, "Fixed (2000)")), os.listdir(e.movies))
 MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 
+# ---------------------------------------------------------------- progress reporter
+print("\nprogress: throttled, atomic, rate/eta from a rolling window")
+e = Env()
+sp = os.path.join(e.base, "status", "status.json"); os.makedirs(os.path.dirname(sp))
+t = [100.0]
+p = MP.Progress(sp, clock=lambda: t[0])
+p.begin("Film", "copying", 1000, files_total=2)
+check("begin writes immediately", p.writes == 1 and os.path.exists(sp), p.writes)
+t[0] = 100.5; p.advance(100, file="a.mkv")
+t[0] = 101.9; p.advance(100)
+check("advance inside 2 s does not write", p.writes == 1, p.writes)
+t[0] = 102.1; p.advance(0)
+check("advance after 2 s writes", p.writes == 2, p.writes)
+doc = json.load(open(sp))
+check("status is active with done/total", doc["state"] == "active" and doc["active"]["done"] == 200
+      and doc["active"]["total"] == 1000 and doc["active"]["file"] == "a.mkv", doc)
+check("no rate before 5 s of samples", doc["active"]["rate"] is None and doc["active"]["eta_s"] is None, doc["active"])
+t[0] = 106.0; p.set_done(600)
+a = json.load(open(sp))["active"]
+check("rate over the window", a["rate"] == 100.0 and a["eta_s"] == 4.0, a)
+t[0] = 136.0; p.set_done(900)
+a = json.load(open(sp))["active"]
+check("old samples age out of the 30 s window", a["rate"] == 10.0 and a["eta_s"] == 10.0, a)
+t[0] = 140.0; p.set_done(900)
+a = json.load(open(sp))["active"]
+check("a stalled transfer has no eta", a["eta_s"] is None, a)
+t[0] = 140.1; p.file_done()
+check("file_done counts", p.doc["active"]["files_done"] == 1)
+p.finish("Film", "ok")
+doc = json.load(open(sp))
+check("finish always writes and clears active", p.writes == 6 and doc["active"] is None
+      and doc["last"]["name"] == "Film" and doc["last"]["result"] == "ok", (p.writes, doc))
+check("no tmp file left", os.listdir(os.path.dirname(sp)) == ["status.json"], os.listdir(os.path.dirname(sp)))
+check("file is world-readable", oct(os.stat(sp).st_mode & 0o777) == "0o644", oct(os.stat(sp).st_mode))
+p.queue([{"name": "Next", "bytes": 5, "files": 1, "state": "waiting"}]); p.idle()
+doc = json.load(open(sp))
+check("idle keeps last and the queue", doc["state"] == "idle" and doc["last"]["name"] == "Film"
+      and doc["queue"][0]["name"] == "Next", doc)
+p2 = MP.Progress(sp)
+check("a new run inherits last from the file", p2.doc["last"]["name"] == "Film", p2.doc)
+p2.queue([{"name": "Film2", "state": "waiting"}, {"name": "Other", "state": "waiting"}])
+p2.begin("Film2", "hashing", 10)
+check("begin drops the active item from the queue", [r["name"] for r in p2.doc["queue"]] == ["Other"], p2.doc["queue"])
+
+print("\nprogress: an unwritable path warns once and never raises")
+msgs = []
+bad = MP.Progress("/nonexistent-dir/x/status.json", log=lambda m, level="INFO": msgs.append((level, m)))
+bad.begin("A", "copying", 10); bad.finish("A", "ok"); bad.idle()
+check("one warning, no exception", len(msgs) == 1 and msgs[0][0] == "WARN", msgs)
+
+print("\nprogress: an empty path is a no-op")
+nul = MP.Progress("")
+nul.begin("A", "copying", 10); nul.advance(5); nul.finish("A", "ok"); nul.idle()
+check("no writes", nul.writes == 0)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]
