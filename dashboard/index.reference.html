@@ -641,6 +641,14 @@ class Component extends DCLogic {
       li.style.color=bad?WARN:GREY;if(r.error)li.title=r.error;
       $('pQueue').appendChild(li);
     });
+    var st=s.staging||[];
+    if(st.length){
+      var sl=document.createElement('li'),tot=0,tip=[];
+      st.forEach(function(r){tot+=r.bytes||0;tip.push(r.path+' ('+r.age_days+'d)');});
+      sl.textContent='abandoned staging · '+st.length+' dir(s) · '+size(tot);
+      sl.style.color=WARN;sl.title=tip.join('\n');
+      $('pQueue').appendChild(sl);
+    }
     return s.state==='active'?5000:30000;
   }
   function load(){

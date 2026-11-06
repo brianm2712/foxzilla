@@ -44,6 +44,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -280,6 +281,12 @@ class Progress:
         self.doc["last"] = {"name": name, "result": result,
                             "finished": self.clock(), "error": error}
         self._write(force=True)
+
+    def staging(self, items):
+        """Abandoned staging dirs, for a human to look at (never deleted)."""
+        if not self.path:
+            return
+        self.doc["staging"] = [dict(r) for r in items]
 
     def idle(self):
         if not self.path:
@@ -1276,6 +1283,85 @@ def process_item(cfg, name, log, dry_run=False, progress=NULL_PROGRESS):
 
 
 # --------------------------------------------------------------------------
+# abandoned staging (reported, never deleted)
+# --------------------------------------------------------------------------
+
+STALE_STAGING_SECONDS = 86400   # a staging dir untouched this long is abandoned
+
+
+def abandoned_staging(cfg, now=None):
+    """
+    Staging dirs a failed run left "for inspection" and nobody came back to.
+    Reported only: leftovers are for a human, never deleted to make room.
+    """
+    now = time.time() if now is None else now
+    seen, found = set(), []
+    for root in (cfg["movies_dest"], cfg["shows_dest"]):
+        base = os.path.join(root, ".staging")
+        key = os.path.realpath(base)
+        if key in seen or not os.path.isdir(base):
+            continue
+        seen.add(key)
+        for name in sorted(os.listdir(base)):
+            path = os.path.join(base, name)
+            try:
+                st = os.lstat(path)
+            except OSError:
+                continue
+            if not stat.S_ISDIR(st.st_mode) or now - st.st_mtime < STALE_STAGING_SECONDS:
+                continue
+            total = 0
+            try:
+                for dp, _dn, fns in os.walk(path):
+                    for f in fns:
+                        try:
+                            total += os.lstat(os.path.join(dp, f)).st_size
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+            found.append({"path": path, "bytes": total,
+                          "age_days": round((now - st.st_mtime) / 86400, 1)})
+    return found
+
+
+def staging_seen_file(cfg):
+    # Beside state.json, not in it: main() prunes state keys that are not
+    # inbox entries, and an inbox item may be called anything.
+    return cfg["state_file"] + ".staging.json"
+
+
+def report_staging(cfg, log, progress, dry_run=False):
+    """Publish abandoned staging; WARN only when the set changes. Never raises."""
+    try:
+        found = abandoned_staging(cfg)
+        progress.staging(found)
+        paths = sorted(r["path"] for r in found)
+        seen_file = staging_seen_file(cfg)
+        try:
+            with open(seen_file) as fh:
+                before = json.load(fh)
+        except (OSError, ValueError):
+            before = []
+        if paths != before:
+            if found:
+                total = sum(r["bytes"] for r in found)
+                listing = ", ".join(f"{r['path']} ({r['age_days']}d)" for r in found)
+                log(f"abandoned staging (not deleted): {len(found)} dir(s), "
+                    f"{human(total)} - {listing}", "WARN")
+            if not dry_run:
+                tmp = seen_file + ".tmp"
+                with open(tmp, "w") as fh:
+                    json.dump(paths, fh)
+                os.replace(tmp, seen_file)
+    except Exception as e:
+        try:
+            log(f"could not check abandoned staging: {type(e).__name__}: {e}", "WARN")
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 
@@ -1360,6 +1446,7 @@ def main(argv=None):
                    if not e.startswith(".") and not is_junk(e)
                    and not e.endswith(NAME_SUFFIX)]
         rows.update((n, queue_row(n, None, "waiting")) for n in entries)
+        report_staging(cfg, log, progress, dry_run=args.dry_run)
         if not entries:
             # Still tidy up: a marker whose item never arrived, or was already
             # dealt with, would otherwise sit there indefinitely.

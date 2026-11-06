@@ -904,6 +904,76 @@ check("next run files the other item", os.path.isdir(os.path.join(e.movies, "Bra
 check("the failed disc was not retried", open(calls).read().count("\n") == 1, open(calls).read())
 MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 
+print("\nabandoned_staging: old staging dirs are reported, never deleted")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+old = os.path.join(e.movies, ".staging", "111-1700000000")
+mkfile(os.path.join(old, "sub", "a.mkv"), 3000)
+mkfile(os.path.join(old, "b.nfo"), 500)
+fresh = os.path.join(e.shows, ".staging", "222-1800000000")
+mkfile(os.path.join(fresh, "c.mkv"), 100)
+two_days = time.time() - 2 * 86400
+os.utime(old, (two_days, two_days))
+e.run("--status-file", sp)
+doc = json.load(open(sp))
+st = doc.get("staging")
+check("status has staging list", isinstance(st, list), doc.keys())
+check("old dir reported with bytes and age",
+      st and len(st) == 1 and st[0]["path"] == old and st[0]["bytes"] == 3500
+      and 1.9 <= st[0]["age_days"] <= 2.1, st)
+check("fresh dir not reported", not any(r["path"] == fresh for r in (st or [])), st)
+check("nothing deleted", os.path.exists(os.path.join(old, "sub", "a.mkv"))
+      and os.path.exists(os.path.join(fresh, "c.mkv")))
+warns = lambda: [l for l in open(e.log).read().splitlines() if "abandoned staging" in l]
+check("WARN logged", len(warns()) == 1 and "WARN" in warns()[0]
+      and "1 dir(s)" in warns()[0] and old in warns()[0] and "(2.0d)" in warns()[0], warns())
+# an inbox item comes and goes: state pruning must not drop the remembered set
+mkfile(os.path.join(e.upload, "Film (2021).mkv"), 2000)
+e.run("--status-file", sp)
+e.run("--status-file", sp)
+check("WARN not repeated across runs (incl. a filing run)", len(warns()) == 1, warns())
+check("item filed meanwhile", os.path.isdir(os.path.join(e.movies, "Film (2021)")))
+old2 = os.path.join(e.shows, ".staging", "333-1700000001")
+mkfile(os.path.join(old2, "d.mkv"), 10)
+os.utime(old2, (two_days, two_days))
+e.run("--status-file", sp)
+check("WARN again when a new old dir appears", len(warns()) == 2 and "2 dir(s)" in warns()[-1], warns())
+check("status lists both", sorted(r["path"] for r in json.load(open(sp))["staging"]) == sorted([old, old2]))
+e.run("--status-file", sp)
+check("and quiet again after", len(warns()) == 2, warns())
+check("still nothing deleted", os.path.isdir(old) and os.path.isdir(old2) and os.path.isdir(fresh))
+e = Env()
+sp = os.path.join(e.base, "status.json")
+rc = e.run("--status-file", sp)
+doc = json.load(open(sp))
+check("no .staging dirs is fine", rc == 0 and doc.get("staging") == [], doc)
+check("no WARN when nothing abandoned", not os.path.exists(e.log)
+      or "abandoned staging" not in open(e.log).read())
+e = Env()
+os.makedirs(os.path.join(e.movies, ".staging"))
+d = os.path.join(e.movies, ".staging", "9-1")
+mkfile(os.path.join(d, "x"), 7); os.utime(d, (two_days, two_days))
+found = MP.abandoned_staging({"movies_dest": e.movies, "shows_dest": e.movies})
+check("same dest root scanned once", len(found) == 1 and found[0]["bytes"] == 7, found)
+real_walk = MP.os.walk
+MP.os.walk = lambda *a, **k: (_ for _ in ()).throw(OSError("nas gone"))
+try:
+    found = MP.abandoned_staging({"movies_dest": e.movies, "shows_dest": e.shows})
+finally:
+    MP.os.walk = real_walk
+check("unreadable dir tolerated (bytes 0)", len(found) == 1 and found[0]["bytes"] == 0, found)
+real_ab = MP.abandoned_staging
+MP.abandoned_staging = lambda cfg: (_ for _ in ()).throw(RuntimeError("scan boom"))
+try:
+    mkfile(os.path.join(e.upload, "Ok (2019).mkv"), 2000)
+    rc = e.run()
+finally:
+    MP.abandoned_staging = real_ab
+check("a failing scan never breaks the run", rc == 0 and os.path.isdir(os.path.join(e.movies, "Ok (2019)")), e.tail(5))
+check("and logs a WARN", any("WARN" in l and "staging" in l for l in e.tail(20)), e.tail(8))
+nul = MP.Progress(""); nul.staging([{"path": "x"}])
+check("Progress.staging inert without path", "staging" not in nul.doc and nul.writes == 0)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]
