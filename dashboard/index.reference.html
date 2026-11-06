@@ -617,7 +617,7 @@ class Component extends DCLogic {
       var pct=a.total?Math.min(100,100*a.done/a.total):0;
       dot(stale?WARN:ACC);
       $('pHead').textContent=a.name;
-      $('pWhen').textContent=(PH[a.phase]||a.phase)+' · '+pct.toFixed(1)+'%';$('pWhen').style.color=GREY;$('pWhen').title='';
+      $('pWhen').textContent=(PH[a.phase]||a.phase)+(a.total?' · '+pct.toFixed(1)+'%':'');$('pWhen').style.color=GREY;$('pWhen').title='';
       $('pBarWrap').hidden=false;$('pBarWrap').setAttribute('aria-valuenow',pct.toFixed(0));
       $('pBar').style.width=pct+'%';$('pBar').style.background=stale?GREY:ACC;
       var m=[];
