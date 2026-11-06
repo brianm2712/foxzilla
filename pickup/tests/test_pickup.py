@@ -914,6 +914,60 @@ check("next run files the other item", os.path.isdir(os.path.join(e.movies, "Bra
 check("the failed disc was not retried", open(calls).read().count("\n") == 1, open(calls).read())
 disc.FFMPEG, disc.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 
+print("\none_item_per_run: failing items cannot starve a good one  (review: A,A,A... and B never ran)")
+real_pi = handoff.process_item
+pi_calls = []
+def failing_for(prefix):
+    def pi(cfg, name, log, **k):
+        pi_calls.append(name)
+        if name.startswith(prefix):
+            raise MP.PickupError("always fails")
+        return real_pi(cfg, name, log, **k)
+    return pi
+e = Env()
+for n in ("A1 (2001).mkv", "A2 (2002).mkv", "B (2003).mkv"):
+    mkfile(os.path.join(e.upload, n), 2048)
+handoff.process_item = failing_for("A")
+try:
+    pi_calls.clear()
+    for _ in range(3):
+        e.run()
+finally:
+    handoff.process_item = real_pi
+check("two always-failing items sorted first: the good one is filed within 3 ticks",
+      os.path.isdir(os.path.join(e.movies, "B (2003)")), pi_calls)
+st = json.load(open(e.state))
+check("both failures still remembered", all(st.get(n, {}).get("last_error") == "always fails"
+                                            for n in ("A1 (2001).mkv", "A2 (2002).mkv")), st)
+
+e = Env()
+for n in ("A.Show.S01E01.mkv", "B.Show.S01E01.mkv"):
+    f = os.path.join(e.upload, n); mkfile(f, 2048)
+    old = time.time() - 2 * MP.QUIET_SECONDS; os.utime(f, (old, old))
+    open(MP.marker_for(e.upload, n), "w").write("done")
+handoff.process_item = failing_for("A.")
+try:
+    pi_calls.clear()
+    e.run(force=False); e.run(force=False)
+    filed_by_2 = os.path.isdir(os.path.join(e.shows, "B Show"))
+    st2 = json.load(open(e.state)).get("A.Show.S01E01.mkv", {})
+    e.run(force=False); e.run(force=False)
+finally:
+    handoff.process_item = real_pi
+check("a failing marked item does not keep the slot: the good one is filed by tick 2", filed_by_2, pi_calls)
+a_calls = pi_calls.count("A.Show.S01E01.mkv")
+check("the failing marked item backs off instead of retrying every tick", 1 <= a_calls <= 2, pi_calls)
+check("its last_error survives the waiting ticks", st2.get("last_error") == "always fails", st2)
+check("its marker is kept while it fails", os.path.exists(MP.marker_for(e.upload, "A.Show.S01E01.mkv")))
+check("the backed-off retry does not claim the marker was acted on",
+      sum("A.Show.S01E01.mkv: upload marked complete" in l
+          for l in open(e.log).read().splitlines()) == 1, e.tail(10))
+for _ in range(3):
+    e.run(force=False)
+check("once it succeeds it is filed", os.path.isdir(os.path.join(e.shows, "A Show")), e.tail(6))
+check("and its marker is removed", not os.path.exists(MP.marker_for(e.upload, "A.Show.S01E01.mkv")))
+check("and its last_error cleared", "A.Show.S01E01.mkv" not in json.load(open(e.state)), json.load(open(e.state)))
+
 print("\nabandoned_staging: old staging dirs are reported, never deleted")
 e = Env()
 sp = os.path.join(e.base, "status.json")

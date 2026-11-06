@@ -126,15 +126,33 @@ def main(argv=None):
         # conversion and the filing of its MKV are one item together.
         attempted = False
         converted = None
+        # Never-failed items get the slot first. In plain sorted order a
+        # permanently failing item early in the listing took the slot every
+        # time it was ready and starved everything after it (two failing
+        # items simply took turns). `entries` itself stays the full listing:
+        # it is what pruning and the marker sweep go by.
+        order = sorted(entries, key=lambda n: (bool(state.get(n, {}).get("last_error")), n))
 
-        for name in entries:
+        for name in order:
             path = os.path.join(cfg["upload_dir"], name)
             now = observe(path)
             prev = state.get(name, {})
             err = prev.get("last_error")
 
+            def remember(entry, err=err):
+                # A failure is remembered until the item succeeds, through
+                # every waiting tick: the ordering above depends on it.
+                if err:
+                    entry["last_error"] = err
+                return entry
+
             marker = marker_for(cfg["upload_dir"], name)
             declared = os.path.exists(marker)
+            # A marker skips the waits only until the item fails. After that
+            # it backs off like any other item, or a permanently failing
+            # marked item would be re-hashed and retried every tick. The
+            # marker itself stays until the item succeeds.
+            declared_fast = declared and not err
 
             def say(msg, prev=prev):
                 # A waiting item used to log the same line every tick (about
@@ -153,7 +171,7 @@ def main(argv=None):
                 if prev.get("held") != "empty":
                     log(f"holding {name}: no usable files (empty folder) - "
                         f"it will be picked up when files appear", "WARN")
-                state[name] = {"shape": now["shape"], "stable": 0, "held": "empty"}
+                state[name] = remember({"shape": now["shape"], "stable": 0, "held": "empty"})
                 rows[name] = queue_row(name, now, "held: empty")
                 continue
 
@@ -169,7 +187,7 @@ def main(argv=None):
                     more = f" +{len(imgs) - 1} more" if len(imgs) > 1 else ""
                     log(f"holding {name}: disc image ({imgs[0]}{more}) - Jellyfin cannot play "
                         f"disc images; convert to MKV and it will be picked up ({why})", "WARN")
-                state[name] = {"shape": now["shape"], "stable": 0, "held": "disc image"}
+                state[name] = remember({"shape": now["shape"], "stable": 0, "held": "disc image"})
                 rows[name] = queue_row(name, now, "held: disc image")
                 continue
             if convertible:
@@ -184,24 +202,24 @@ def main(argv=None):
                     state[name] = prev
                     rows[name] = queue_row(name, now, "held: convert failed", err)
                     continue
-            if now["partial"] and not declared:
+            if now["partial"] and not declared_fast:
                 said = say(f"watching {name}: transfer still in progress (partial files)")
-                state[name] = {"shape": now["shape"], "stable": 0, "said": said}
+                state[name] = remember({"shape": now["shape"], "stable": 0, "said": said})
                 rows[name] = queue_row(name, now, "uploading", err)
                 continue
-            # A declared item (marker present) skips the quiet and stability
-            # waits: see below where it is acted on.
-            if not declared and time.time() - now["newest"] < QUIET_SECONDS and not args.force:
+            # A declared item (marker present, no failure yet) skips the quiet
+            # and stability waits: see below where it is acted on.
+            if not declared_fast and time.time() - now["newest"] < QUIET_SECONDS and not args.force:
                 said = say(f"watching {name}: written to in the last {QUIET_SECONDS}s")
-                state[name] = {"shape": now["shape"], "stable": 0, "said": said}
+                state[name] = remember({"shape": now["shape"], "stable": 0, "said": said})
                 rows[name] = queue_row(name, now, "writing", err)
                 continue
 
             stable = prev.get("stable", 0) + 1 if prev.get("shape") == now["shape"] else 0
-            if stable < STABLE_POLLS and not args.force and not declared:
+            if stable < STABLE_POLLS and not args.force and not declared_fast:
                 said = say(f"watching {name}: {now['files']} files, {human(now['bytes'])} "
                            f"(stable {stable}/{STABLE_POLLS})")
-                state[name] = {"shape": now["shape"], "stable": stable, "said": said}
+                state[name] = remember({"shape": now["shape"], "stable": stable, "said": said})
                 rows[name] = queue_row(name, now, f"stable {stable}/{STABLE_POLLS}", err)
                 continue
 
@@ -210,11 +228,11 @@ def main(argv=None):
                 # count (and the marker) so the next run acts without
                 # re-waiting.
                 said = say(f"next run: {name}")
-                state[name] = {"shape": now["shape"], "stable": stable, "said": said}
+                state[name] = remember({"shape": now["shape"], "stable": stable, "said": said})
                 rows[name] = queue_row(name, now, "ready (next run)", err)
                 continue
 
-            if declared:
+            if declared_fast:
                 # The uploader has verified this item and said so. Trusting
                 # that is safe: the manifest is rebuilt and every file is
                 # hashed again before anything is deleted, so a marker written
@@ -239,6 +257,7 @@ def main(argv=None):
                     # it next (its marker lets it skip the stability wait, so
                     # it is filed straight away) and its marker is not swept.
                     entries.append(item)
+                    order.append(item)
                     converted = item
                 except PickupError as e:
                     log(f"  convert FAILED, disc left in the inbox: {e}", "ERROR")
