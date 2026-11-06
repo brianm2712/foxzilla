@@ -2,12 +2,30 @@
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import os
 import ssl
+import threading
 import time
 from ftplib import FTP, FTP_TLS
 
 from .base import CHUNK, Backend, Entry, _int, _ls_time
+
+
+def _serial(method):
+    """
+    Run a method holding the backend's lock.
+
+    FTP has one control connection, and two threads issuing commands on it at
+    once (browsing a pane while the queue transfers, say) interleave their
+    requests and replies. Every operation that talks to the server takes the
+    lock, so they queue up instead.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *a, **k):
+        with self._lock:
+            return method(self, *a, **k)
+    return wrapper
 
 
 class FTPBackend(Backend):
@@ -25,6 +43,7 @@ class FTPBackend(Backend):
         # out explicitly with insecure_tls - never silently.
         self.ca_file = ca_file or None
         self.insecure_tls = bool(insecure_tls)
+        self._lock = threading.RLock()
         self.label = label or f"{'ftps' if tls else 'ftp'}://{user}@{host}"
         self.ftp = None
 
@@ -35,6 +54,7 @@ class FTPBackend(Backend):
             ctx.verify_mode = ssl.CERT_NONE
         return ctx
 
+    @_serial
     def connect(self):
         self.ftp = FTP_TLS(context=self._tls_context()) if self.tls else FTP()
         self.ftp.connect(self.host, self.port, timeout=30)
@@ -57,9 +77,11 @@ class FTPBackend(Backend):
             except Exception:
                 pass
 
+    @_serial
     def home(self):
         return self.ftp.pwd() or "/"
 
+    @_serial
     def listdir(self, path):
         entries = []
         # MLSD is the machine-readable listing; fall back to parsing LIST.
@@ -104,21 +126,26 @@ class FTPBackend(Backend):
             mode=mode,
         )
 
+    @_serial
     def mkdir(self, path):
         self.ftp.mkd(path)
 
+    @_serial
     def remove(self, path):
         self.ftp.delete(path)
 
+    @_serial
     def rmdir(self, path):
         for e in self.listdir(path):
             child = self.join(path, e.name)
             self.rmdir(child) if e.is_dir else self.remove(child)
         self.ftp.rmd(path)
 
+    @_serial
     def rename(self, src, dst):
         self.ftp.rename(src, dst)
 
+    @_serial
     def read_to(self, path, local_path, progress=None):
         total = self.size(path)
         done = 0
@@ -131,8 +158,10 @@ class FTPBackend(Backend):
                 if progress:
                     el = time.monotonic() - started
                     progress(done, total, done / el if el > 0.2 else 0)
-            self.ftp.retrbinary(f"RETR {path}", got, blocksize=CHUNK)
+            self._guarded(lambda: self.ftp.retrbinary(f"RETR {path}", got,
+                                                      blocksize=CHUNK))
 
+    @_serial
     def write_from(self, local_path, path, progress=None):
         total = os.path.getsize(local_path)
         done = 0
@@ -144,12 +173,40 @@ class FTPBackend(Backend):
                 if progress:
                     el = time.monotonic() - started
                     progress(done, total, done / el if el > 0.2 else 0)
-            self.ftp.storbinary(f"STOR {path}", fh, blocksize=CHUNK,
-                                callback=sending)
+            self._guarded(lambda: self.ftp.storbinary(f"STOR {path}", fh, blocksize=CHUNK,
+                                                      callback=sending))
+
+    def _guarded(self, transfer):
+        """
+        Run a data transfer; if it is interrupted, leave a clean connection.
+
+        A transfer stopped part-way (cancel, or a local write error) leaves the
+        server's reply to it unread on the control connection, so the next
+        command would read that instead of its own answer. Send ABOR, then
+        reconnect anyway: some servers answer ABOR oddly, and a fresh login
+        is the one state that is certainly clean.
+        """
+        try:
+            return transfer()
+        except BaseException:
+            try:
+                self.ftp.abort()
+            except Exception:                                # noqa: BLE001
+                pass
+            try:
+                self.ftp.close()
+            except Exception:                                # noqa: BLE001
+                pass
+            try:
+                self.connect()
+            except Exception:                                # noqa: BLE001
+                pass                       # the next call will report it
+            raise
 
     def size_of(self, path):
         return self.size(path)
 
+    @_serial
     def size(self, path):
         try:
             self.ftp.voidcmd("TYPE I")

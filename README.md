@@ -89,7 +89,9 @@ Each destination directory is listed once rather than stat'ed per file. Over SFT
 
 **Progress and rate** come from watching the file's own size: a free local stat for downloads, one cheap `stat` over the multiplexed SSH connection for uploads. OpenSSH's own meter is not used — it draws nothing when driven programmatically, pty or not.
 
-**Interrupted transfers resume** rather than restarting, via `reget` / `reput`.
+**Cancel really stops a transfer.** SFTP kills its `sftp` process; FTP aborts and reconnects so the control connection is clean; S3 and WebDAV uploads stream from disk and stop mid-body. Downloads go to `<name>.part` and are renamed only when complete, so a cancelled or failed download leaves nothing behind. Quit asks first while anything is running. Interrupted transfers restart from the beginning; they do not resume.
+
+**A stalled SFTP transfer is killed** after five minutes without progress, and SSH keepalives (15 s, four misses) end a dead connection within a minute.
 
 **A site can pin the folder it opens in.** Set `"path"` on an SFTP site and it lands there instead of the account's home — a deep drop folder becomes one click rather than five. Local sites already worked this way.
 

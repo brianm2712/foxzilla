@@ -1027,18 +1027,27 @@ class App:
         self.log("queue paused" if paused else "queue resumed")
 
     def clear_finished(self):
-        for job in list(self.queue.jobs):
-            if job.state in ("done", "cancelled", "skipped") and job.row \
-                    and self.qtree.exists(job.row):
+        for job in self.queue.remove_finished():
+            if job.row and self.qtree.exists(job.row):
                 self.qtree.delete(job.row)
-                self._rows.pop(job.row, None)
-                self.queue.jobs.remove(job)
+            self._rows.pop(job.row, None)
 
     def quit(self):
-        for pane in (self.left, self.right):
-            if pane.backend:
-                try:
-                    pane.backend.close()
-                except Exception:
-                    pass
+        busy = len(self.queue.running) + len(self.queue.pending)
+        if busy and not messagebox.askyesno(
+                "Quit Foxzilla",
+                f"{busy} transfer(s) are still running or queued.\n\n"
+                "Cancel them and quit? Partly downloaded files are removed; "
+                "partly uploaded ones stay on the server.",
+                icon="warning", parent=self.root):
+            return
+        self.queue.shutdown(timeout=5)
+        for backend in self._open_backends():
+            try:
+                backend.close()
+            except Exception:
+                pass
         self.root.destroy()
+
+    def _open_backends(self):
+        return [p.backend for p in (self.left, self.right) if p.backend]

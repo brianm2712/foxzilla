@@ -5,6 +5,7 @@ import os
 import posixpath
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 
 from .backends import Backend, LocalBackend, TransferError, safe_name, under_root
@@ -12,6 +13,7 @@ from .util import APP
 
 
 COMPLETE_SUFFIX = ".complete"
+PART_SUFFIX = ".part"
 
 
 def marker_path(directory: str, name: str) -> str:
@@ -123,6 +125,26 @@ class Queue:
             targets = [j for j in self.jobs if j.active]
         for j in targets:
             self.cancel(j)
+
+    def shutdown(self, timeout=5.0):
+        """Cancel everything and give running transfers a moment to stop."""
+        self.cancel_all()
+        deadline = time.monotonic() + timeout
+        while self.running and time.monotonic() < deadline:
+            time.sleep(0.05)
+        with self._lock:
+            self._stop = True
+            self._lock.notify_all()
+        return not self.running
+
+    FINISHED = ("done", "cancelled", "skipped")
+
+    def remove_finished(self) -> list[Job]:
+        """Drop finished jobs (failed ones stay, to be seen). Returns them."""
+        with self._lock:
+            gone = [j for j in self.jobs if j.state in self.FINISHED]
+            self.jobs = [j for j in self.jobs if j.state not in self.FINISHED]
+        return gone
 
     def set_limit(self, n: int):
         with self._lock:
@@ -264,12 +286,25 @@ class Queue:
                 job.size = total
             self.on_change(job)
 
-        if src.is_local and dst.is_local:
-            LocalBackend._copy(job.src_path, job.dst_path, progress)
+        if dst.is_local:
+            # Into '<name>.part', renamed only once it is all there: a
+            # cancelled, failed or killed download never leaves a truncated
+            # file under the real name (or clobbers a good existing one).
+            part = job.dst_path + PART_SUFFIX
+            try:
+                if src.is_local:
+                    LocalBackend._copy(job.src_path, part, progress)
+                else:
+                    src.read_to(job.src_path, part, progress)
+                os.replace(part, job.dst_path)
+            except BaseException:
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+                raise
         elif src.is_local:
             dst.write_from(job.src_path, job.dst_path, progress)
-        elif dst.is_local:
-            src.read_to(job.src_path, job.dst_path, progress)
         else:
             # remote to remote: relay through a temp file on this machine.
             tmp = os.path.join(tempfile.gettempdir(),

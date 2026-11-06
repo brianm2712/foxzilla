@@ -48,6 +48,39 @@ check("left pane listed the folder", [e.name for e in app.left.entries] == ["hel
 check("the queue view starts empty", not app.qtree.get_children())
 check("log has the connect line", "connected" in app.logbox.get("1.0", "end"))
 
+print("\nquit asks first while transfers are running")
+import time
+from foxzilla import gui as G
+
+class Slow(F.Backend):
+    is_local = False
+    def size_of(self, path): return 100
+    def read_to(self, path, local, progress=None):
+        for i in range(200):
+            progress and progress(i, 200, 0)
+            time.sleep(0.05)
+        open(local, "wb").write(b"x")
+
+job = F.Job(src=Slow(), src_path="/r/slow.bin", dst=F.LocalBackend(),
+            dst_path=os.path.join(tempfile.mkdtemp(), "slow.bin"))
+app.queue.add(job)
+t0 = time.time()
+while job.state != "running" and time.time() - t0 < 5:
+    time.sleep(0.02)
+asked = []
+G.messagebox.askyesno = lambda *a, **k: (asked.append(a), False)[1]
 app.quit()
+check("asked before quitting", len(asked) == 1, asked)
+check("saying no keeps the window and the transfer", root.winfo_exists()
+      and job.state == "running", job.state)
+G.messagebox.askyesno = lambda *a, **k: True
+app.quit()
+check("saying yes cancels the transfer", job.state == "cancelled", job.state)
+try:
+    root.winfo_exists(); gone = False
+except tk.TclError:
+    gone = True
+check("and closes the window", gone)
+
 print(f"\n{'ALL PASS' if ok else '*** FAILURES ***'}")
 sys.exit(0 if ok else 1)

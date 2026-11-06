@@ -137,6 +137,42 @@ def under_root(root: str, path: str, local: bool = False) -> bool:
     return path.startswith(root.rstrip(join.sep) + join.sep)
 
 
+class ProgressReader:
+    """
+    A file opened for an HTTP upload, reporting progress as it is read.
+
+    Streams the body from disk (no more reading a whole file into memory)
+    and gives the queue a chance to cancel: if `progress` raises, the upload
+    stops mid-body. Reported every CHUNK bytes, not every socket write.
+    """
+
+    def __init__(self, path, progress=None):
+        self.fh = open(path, "rb")
+        self.total = os.fstat(self.fh.fileno()).st_size
+        self.progress = progress
+        self.done = self._told = 0
+        self.started = time.monotonic()
+
+    def read(self, n=-1):
+        buf = self.fh.read(n if n and n > 0 else CHUNK)
+        self.done += len(buf)
+        if self.progress and (self.done - self._told >= CHUNK or not buf
+                              or self.done == self.total):
+            self._told = self.done
+            el = time.monotonic() - self.started
+            self.progress(self.done, self.total, self.done / el if el > 0.2 else 0)
+        return buf
+
+    def close(self):
+        self.fh.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
 def _pump(src, dst, total, progress, done=0):
     """Shovel bytes from a reader to a writer, reporting progress and rate."""
     started = time.monotonic()

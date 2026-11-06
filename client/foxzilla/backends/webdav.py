@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from .base import Backend, Entry, TransferError, _int, _pump
+from .base import Backend, Entry, ProgressReader, TransferError, _int, _pump
 
 
 class WebDAVBackend(Backend):
@@ -94,15 +94,12 @@ class WebDAVBackend(Backend):
             _pump(resp, fh, total, progress)
 
     def write_from(self, local_path, path, progress=None):
-        total = os.path.getsize(local_path)
-        with open(local_path, "rb") as fh:
-            body = fh.read()
-        if progress:
-            progress(0, total, 0)
-        self._request("PUT", path, body=body,
-                      headers={"Content-Type": "application/octet-stream"})
-        if progress:
-            progress(total, total, 0)
+        with ProgressReader(local_path, progress) as body:
+            if progress:
+                progress(0, body.total, 0)
+            self._request("PUT", path, body=body,
+                          headers={"Content-Type": "application/octet-stream",
+                                   "Content-Length": str(body.total)})
 
 
 def _http_time(s):

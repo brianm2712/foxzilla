@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from .base import Backend, Entry, TransferError, _int, _pump
+from .base import CHUNK, Backend, Entry, ProgressReader, TransferError, _int, _pump
 
 
 class S3Backend(Backend):
@@ -40,7 +40,7 @@ class S3Backend(Backend):
     # -- signing ----------------------------------------------------------
 
     def _request(self, method, key_path, query=None, body=b"", headers=None,
-                 stream=False):
+                 stream=False, payload_hash=None):
         query = query or {}
         headers = dict(headers or {})
         url = urllib.parse.urlparse(self.endpoint)
@@ -50,7 +50,9 @@ class S3Backend(Backend):
         now = dt.datetime.now(dt.timezone.utc)
         amzdate = now.strftime("%Y%m%dT%H%M%SZ")
         datestamp = now.strftime("%Y%m%d")
-        payload_hash = hashlib.sha256(body if isinstance(body, bytes) else b"").hexdigest()
+        if payload_hash is None:
+            # A streamed body (a file) must come with its hash precomputed.
+            payload_hash = hashlib.sha256(body if isinstance(body, bytes) else b"").hexdigest()
 
         headers.update({
             "host": host,
@@ -167,15 +169,19 @@ class S3Backend(Backend):
             _pump(resp, fh, total, progress)
 
     def write_from(self, local_path, path, progress=None):
-        # Single PUT: fine to a few GB, which is the scope of this tool.
+        # Single PUT: fine to a few GB, which is the scope of this tool. SigV4
+        # signs the payload hash, so the file is read twice - once to hash,
+        # once to send - rather than held in memory.
+        h = hashlib.sha256()
         with open(local_path, "rb") as fh:
-            body = fh.read()
-        if progress:
-            progress(0, len(body), 0)
-        self._request("PUT", "/" + path.lstrip("/"), body=body,
-                      headers={"content-length": str(len(body))})
-        if progress:
-            progress(len(body), len(body), 0)
+            while (buf := fh.read(CHUNK)):
+                h.update(buf)
+        with ProgressReader(local_path, progress) as body:
+            if progress:
+                progress(0, body.total, 0)
+            self._request("PUT", "/" + path.lstrip("/"), body=body,
+                          payload_hash=h.hexdigest(),
+                          headers={"content-length": str(body.total)})
 
 
 def _s3_quote(path):
