@@ -4,10 +4,13 @@ from __future__ import annotations
 import posixpath
 from dataclasses import dataclass
 
-from .backends import Backend
+from .backends import Backend, TransferError, safe_name
 
 
 CLEAR, IDENTICAL, SAME_SIZE, CONFLICT = "clear", "identical", "same size", "conflict"
+# A name the source listed that is not a plain file name ('../x', '/etc/y').
+# Shown to the user, never transferred: no choice in WANTED includes it.
+UNSAFE = "unsafe"
 
 
 @dataclass
@@ -17,10 +20,13 @@ class PlanItem:
     size: int
     verdict: str
     is_dir: bool = False
+    # The name exactly as the source listed it, when that differs from the
+    # path's leaf (an unsafe name like '../x' is shown as-is, not as 'x').
+    listed: str = ""
 
     @property
     def name(self):
-        return posixpath.basename(self.src_path.rstrip("/")) or self.src_path
+        return self.listed or posixpath.basename(self.src_path.rstrip("/")) or self.src_path
 
     @property
     def exists(self):
@@ -90,6 +96,11 @@ def plan_transfer(src: Backend, src_path: str, dst: Backend, dst_path: str,
         except Exception:                            # noqa: BLE001
             known = {}                               # destination absent: all new
         for e in entries:
+            try:
+                safe_name(e.name)
+            except TransferError:
+                out.append(PlanItem(sp, dp, e.size, UNSAFE, listed=e.name))
+                continue
             if e.is_dir:
                 stack.append((src.join(sp, e.name), posixpath.join(dp, e.name), True))
                 continue
@@ -105,9 +116,10 @@ def plan_transfer(src: Backend, src_path: str, dst: Backend, dst_path: str,
 
 
 def summarise(plan: list[PlanItem]) -> dict:
-    files = [p for p in plan if not p.is_dir]
-    counts = {v: sum(1 for p in files if p.verdict == v)
-              for v in (CLEAR, IDENTICAL, SAME_SIZE, CONFLICT)}
+    counts = {UNSAFE: sum(1 for p in plan if p.verdict == UNSAFE)}
+    files = [p for p in plan if not p.is_dir and p.verdict != UNSAFE]
+    counts.update({v: sum(1 for p in files if p.verdict == v)
+                   for v in (CLEAR, IDENTICAL, SAME_SIZE, CONFLICT)})
     counts["files"] = len(files)
     counts["bytes"] = sum(p.size for p in files)
     counts["new_bytes"] = sum(p.size for p in files if p.verdict == CLEAR)

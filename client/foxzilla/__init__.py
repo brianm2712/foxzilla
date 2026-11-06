@@ -22,12 +22,13 @@ from . import backends, config, queue, scan, util
 from .backends import (CHUNK, Backend, Entry, FTPBackend, LocalBackend,
                        S3Backend, SFTPBackend, TransferError, WebDAVBackend,
                        _http_time, _int, _iso_time, _ls_time, _mlsd_time,
-                       _pump, _s3_quote, clean_typed_path, make_backend)
+                       _pump, _s3_quote, clean_typed_path, make_backend,
+                       safe_name, under_root)
 from .config import (CONFIG_DIR, DEFAULT_SITES, SECRETS_FILE, SITES_FILE,
                      load_secrets, load_sites, needs_password, save_secret,
                      save_sites)
 from .queue import COMPLETE_SUFFIX, Job, Queue, marker_path
-from .scan import (CLEAR, CONFLICT, IDENTICAL, SAME_SIZE, WANTED, PlanItem,
+from .scan import (CLEAR, CONFLICT, IDENTICAL, SAME_SIZE, UNSAFE, WANTED, PlanItem,
                    compare_paths, plan_transfer, summarise)
 from .util import APP, VERSION, bar, human, when
 

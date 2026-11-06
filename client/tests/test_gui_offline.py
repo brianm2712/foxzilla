@@ -34,10 +34,11 @@ F.save_sites([{"name": "Local", "type": "local", "path": work},
 root = tk.Tk(); root.withdraw()
 app = F.App(root)
 
-def settle(rounds=40):
-    for _ in range(rounds):
-        root.update()
-        root.after(20)
+def settle(ms=1000):
+    # Run the real event loop for a bounded time. (root.update() in a loop
+    # can block forever on macOS's Tk with a withdrawn window.)
+    root.after(ms, root.quit)
+    root.mainloop()
 
 settle()
 check("left pane connected to the local site", app.left.backend is not None

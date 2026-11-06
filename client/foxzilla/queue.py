@@ -7,7 +7,7 @@ import tempfile
 import threading
 from dataclasses import dataclass, field
 
-from .backends import Backend, LocalBackend, TransferError
+from .backends import Backend, LocalBackend, TransferError, safe_name, under_root
 from .util import APP
 
 
@@ -32,6 +32,9 @@ class Job:
     rate: float = 0.0
     error: str = ""
     row: str = ""           # treeview iid
+    # The destination folder the user chose. Every path this job (and every
+    # child it expands into) writes must stay inside it.
+    dst_root: str = ""
     cancel: threading.Event = field(default_factory=threading.Event)
 
     @property
@@ -197,18 +200,36 @@ class Queue:
 
     # -- the work itself --------------------------------------------------
 
+    @staticmethod
+    def _check_root(job: Job):
+        """Refuse a destination outside the folder the user chose."""
+        if job.dst_root and not under_root(job.dst_root, job.dst_path,
+                                           local=job.dst.is_local):
+            raise TransferError(f"refusing to write outside {job.dst_root}: "
+                                f"{job.dst_path}")
+
     def _expand(self, job: Job):
         """Turn a directory into child jobs, queued right behind it."""
+        self._check_root(job)
         try:
             job.dst.mkdir(job.dst_path)
         except Exception:                                # noqa: BLE001
             pass                                         # already there
-        children = [
-            Job(src=job.src, src_path=job.src.join(job.src_path, e.name),
-                dst=job.dst, dst_path=posixpath.join(job.dst_path, e.name),
-                is_dir=e.is_dir, size=e.size)
-            for e in job.src.listdir(job.src_path)
-        ]
+        children = []
+        for e in job.src.listdir(job.src_path):
+            try:
+                name = safe_name(e.name)
+            except TransferError as bad:
+                # Shown as a failed row, so it is seen and so it blocks any
+                # completion marker; its siblings still transfer.
+                children.append(Job(src=job.src, src_path=job.src_path + "/" + e.name,
+                                    dst=job.dst, dst_path=job.dst_path, size=e.size,
+                                    state="failed", error=str(bad),
+                                    dst_root=job.dst_root))
+                continue
+            children.append(Job(src=job.src, src_path=job.src.join(job.src_path, name),
+                                dst=job.dst, dst_path=posixpath.join(job.dst_path, name),
+                                is_dir=e.is_dir, size=e.size, dst_root=job.dst_root))
         self._insert_after(job, children)
 
     def _already_there(self, job: Job) -> bool:
@@ -233,6 +254,7 @@ class Queue:
 
     def _move_file(self, job: Job):
         src, dst = job.src, job.dst
+        self._check_root(job)
 
         def progress(done, total, rate=0.0):
             if job.cancel.is_set():

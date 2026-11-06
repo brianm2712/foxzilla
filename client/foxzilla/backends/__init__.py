@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 from .base import (CHUNK, Backend, Entry, TransferError, _int, _ls_time, _pump,
-                   clean_typed_path)
+                   clean_typed_path, safe_name, under_root)
 from .ftp import FTPBackend, _mlsd_time
 from .local import LocalBackend
 from .s3 import S3Backend, _iso_time, _s3_quote

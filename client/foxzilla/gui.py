@@ -9,10 +9,11 @@ import threading
 import time
 
 from . import config
-from .backends import Backend, Entry, clean_typed_path, make_backend
+from .backends import (Backend, Entry, TransferError, clean_typed_path,
+                       make_backend, safe_name)
 from .config import load_secrets, load_sites, needs_password, save_sites
 from .queue import Job, Queue, marker_path
-from .scan import (CLEAR, CONFLICT, IDENTICAL, SAME_SIZE,
+from .scan import (CLEAR, CONFLICT, IDENTICAL, SAME_SIZE, UNSAFE,
                    plan_transfer, summarise)
 from .scan import WANTED as _WANTED
 from .util import APP, VERSION, bar, human, when
@@ -419,6 +420,9 @@ class ScanDialog(tk.Toplevel):
             bits.append(f"{counts[CONFLICT]} same name but different content")
         if counts[CLEAR]:
             bits.append(f"{counts[CLEAR]} new — {human(counts['new_bytes'])}")
+        if counts[UNSAFE]:
+            bits.append(f"{counts[UNSAFE]} refused — the server listed a name that "
+                        "would land outside the destination folder")
         ttk.Label(head, style="Hint.TLabel", justify="left",
                   text="\n".join(bits)).pack(anchor="w", pady=(4, 0))
 
@@ -430,10 +434,12 @@ class ScanDialog(tk.Toplevel):
             tree.heading(c, text=c.capitalize())
             tree.column(c, width=w, anchor="e" if c == "size" else "w")
         for tag, colour in ((CLEAR, THEME["ok"]), (IDENTICAL, THEME["muted"]),
-                            (SAME_SIZE, THEME["accent"]), (CONFLICT, THEME["err"])):
+                            (SAME_SIZE, THEME["accent"]), (CONFLICT, THEME["err"]),
+                            (UNSAFE, THEME["err"])):
             tree.tag_configure(tag, foreground=colour)
         label = {CLEAR: "new", IDENTICAL: "identical — skip",
-                 SAME_SIZE: "same size, unverified", CONFLICT: "differs — would overwrite"}
+                 SAME_SIZE: "same size, unverified", CONFLICT: "differs — would overwrite",
+                 UNSAFE: "unsafe name — refused"}
         # Existing files first: they are the reason this dialog is open.
         for item in sorted((p for p in plan if not p.is_dir),
                            key=lambda p: (p.verdict == CLEAR, p.name.lower())):
@@ -800,8 +806,15 @@ class App:
         if not sel:
             messagebox.showinfo(APP, "Nothing selected.")
             return
+        try:
+            for e in sel:
+                safe_name(e.name)
+        except TransferError as e:
+            messagebox.showerror(APP, f"Not transferring: {e}")
+            return
 
         src, dst = src_pane.backend, dst_pane.backend
+        dst_root = dst_pane.path
         pairs = [(src.join(src_pane.path, e.name),
                   posixpath.join(dst_pane.path, e.name), e.is_dir) for e in sel]
 
@@ -810,7 +823,7 @@ class App:
         if not self.scan_var.get():
             for (sp, dp, isdir), e in zip(pairs, sel):
                 self.queue.add(Job(src=src, src_path=sp, dst=dst, dst_path=dp,
-                                   is_dir=isdir, size=e.size))
+                                   is_dir=isdir, size=e.size, dst_root=dst_root))
             self.log(f"queued {len(sel)} item(s) → {dst.label}")
             self._pending_refresh = dst_pane
             return
@@ -833,14 +846,17 @@ class App:
                 self.log("nothing to transfer")
                 return
             already = counts[IDENTICAL] + counts[SAME_SIZE] + counts[CONFLICT]
-            if not already:
+            if counts[UNSAFE]:
+                self.log(f"refusing {counts[UNSAFE]} item(s) with unsafe names "
+                         "from the server")
+            if not already and not counts[UNSAFE]:
                 self.log(f"scan: all {counts['files']} file(s) are new "
                          f"({human(counts['bytes'])}) — transferring")
-                self._queue_plan(plan, "all", src, dst_pane)
+                self._queue_plan(plan, "all", src, dst_pane, dst_root)
                 return
             dialog = ScanDialog(self.root, plan, dst.label)
             if dialog.choice:
-                self._queue_plan(plan, dialog.choice, src, dst_pane)
+                self._queue_plan(plan, dialog.choice, src, dst_pane, dst_root)
             else:
                 self.log("transfer cancelled")
 
@@ -849,7 +865,7 @@ class App:
 
     WANTED = _WANTED          # defined in scan.py; kept here for callers
 
-    def _queue_plan(self, plan, mode, src, dst_pane):
+    def _queue_plan(self, plan, mode, src, dst_pane, dst_root):
         """Create the folders the chosen files need, then queue the files."""
         wanted = self.WANTED[mode]
         files = [p for p in plan if not p.is_dir and p.verdict in wanted]
@@ -872,7 +888,7 @@ class App:
             for item in items:
                 self.queue.add(Job(src=src, src_path=item.src_path,
                                    dst=dst_pane.backend, dst_path=item.dst_path,
-                                   size=item.size))
+                                   size=item.size, dst_root=dst_root))
             self.log(f"queued {len(items)} file(s) → {dst_pane.backend.label}"
                      + (f", skipped {skipped} already there" if skipped else ""))
             self._pending_refresh = dst_pane

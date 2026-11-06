@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import posixpath
 import re
 import time
@@ -101,6 +102,39 @@ class Backend:
 
     def __str__(self):
         return self.label
+
+
+def safe_name(name: str) -> str:
+    """
+    A listing entry's name, if it is safe to join onto a local folder.
+
+    Every name in a listing comes from the far side, and a recursive download
+    joins it onto a folder the user chose. A hostile or broken server could
+    list '../x' or an absolute path and so write anywhere this account can,
+    so anything that is not a single plain path component is refused.
+    """
+    if (not name or name in (".", "..") or "/" in name or "\\" in name
+            or "\x00" in name):
+        raise TransferError(f"unsafe name from server: {name!r}")
+    return name
+
+
+def under_root(root: str, path: str, local: bool = False) -> bool:
+    """
+    Is `path` inside `root` (or `root` itself)?
+
+    For a local destination the real paths are compared, so a symlink that
+    points out of the chosen folder does not count as inside it.
+    """
+    if local:
+        root, path = os.path.realpath(root), os.path.realpath(path)
+        join = os.path
+    else:
+        root, path = posixpath.normpath(root), posixpath.normpath(path)
+        join = posixpath
+    if path == root:
+        return True
+    return path.startswith(root.rstrip(join.sep) + join.sep)
 
 
 def _pump(src, dst, total, progress, done=0):
