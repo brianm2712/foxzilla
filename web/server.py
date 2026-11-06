@@ -45,7 +45,9 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "client"))
 
 import egress                                    # noqa: E402
-import foxzilla as fz                            # noqa: E402
+# Only the GUI-free parts of the client: no Tk is imported on the server.
+from foxzilla import backends as fz              # noqa: E402
+from foxzilla import scan as fzscan              # noqa: E402
 
 PORT = int(os.environ.get("PORT", "8110"))
 STATIC = os.path.join(HERE, "static")
@@ -428,9 +430,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             digest = str(f.get("sha256", ""))
             there = known.get(name)
             if not there or there.is_dir:
-                verdict = fz.CLEAR
+                verdict = fzscan.CLEAR
             elif there.size != size:
-                verdict = fz.CONFLICT
+                verdict = fzscan.CONFLICT
             else:
                 # Same size. Only a hash from the far side can settle it, and
                 # most remotes cannot produce one without sending the file.
@@ -439,9 +441,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     with s.lock:
                         remote_digest = s.backend.checksum(posixpath.join(dest, name))
                 if remote_digest and digest:
-                    verdict = fz.IDENTICAL if remote_digest == digest else fz.CONFLICT
+                    verdict = fzscan.IDENTICAL if remote_digest == digest else fzscan.CONFLICT
                 else:
-                    verdict = fz.SAME_SIZE
+                    verdict = fzscan.SAME_SIZE
             out.append({"name": name, "size": size, "verdict": verdict})
 
         counts = {}

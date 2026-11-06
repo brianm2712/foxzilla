@@ -14,14 +14,21 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 DEST=${1:-"$ROOT/dist"}
 APP="$DEST/Foxzilla.app"
-VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$ROOT/client/foxzilla.py" | head -1)
+VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$ROOT/client/foxzilla/util.py" | head -1)
 VERSION=${VERSION:-0.1}
 
 echo "Building Foxzilla.app $VERSION -> $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
+# The launcher shim plus the package it runs. No caches: they are built for
+# whichever python ran last and would only go stale inside the bundle.
 cp "$ROOT/client/foxzilla.py" "$APP/Contents/Resources/foxzilla.py"
+(cd "$ROOT/client" && find foxzilla -name '*.py' -not -path '*/__pycache__/*') |
+while read -r f; do
+    mkdir -p "$APP/Contents/Resources/$(dirname "$f")"
+    cp "$ROOT/client/$f" "$APP/Contents/Resources/$f"
+done
 
 # ---- icon -----------------------------------------------------------------
 # iconutil wants an .iconset with Apple's exact names, including the @2x

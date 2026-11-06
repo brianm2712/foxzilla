@@ -6,6 +6,7 @@ Run every test file in the repo and fail if any of them fails.
     python3 tests/run_all.py client web      # only these top-level areas
     python3 tests/run_all.py -k ftp          # only files whose path contains 'ftp'
     python3 tests/run_all.py -v              # show each file's full output
+    python3 tests/run_all.py --python /path/to/python3   # e.g. one with Tk
 
 Each file runs in its own interpreter with a timeout, because the test files
 are plain scripts (no framework) and one hung socket must not hang the run.
@@ -44,11 +45,11 @@ def discover(areas, needle=None):
     return found
 
 
-def run_one(path, timeout):
+def run_one(path, timeout, python=sys.executable):
     started = time.monotonic()
     try:
         proc = subprocess.run(
-            [sys.executable, path], cwd=os.path.dirname(path),
+            [python, path], cwd=os.path.dirname(path),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, timeout=timeout,
         )
@@ -75,6 +76,10 @@ def main(argv=None):
     ap.add_argument("-t", "--timeout", type=int, default=300,
                     help="seconds per file (default 300)")
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--python", default=os.environ.get("FOXZILLA_TEST_PYTHON",
+                                                       sys.executable),
+                    help="interpreter to run the tests with (default: this one, "
+                         "or $FOXZILLA_TEST_PYTHON)")
     args = ap.parse_args(argv)
 
     files = discover(args.areas, args.needle)
@@ -85,7 +90,7 @@ def main(argv=None):
     results = []
     for path in files:
         rel = os.path.relpath(path, ROOT)
-        status, rc, out, took = run_one(path, args.timeout)
+        status, rc, out, took = run_one(path, args.timeout, args.python)
         results.append((rel, status))
         print(f"{status}  {rel}  ({took:.1f}s)", flush=True)
         if args.verbose or status in ("FAIL", "TIME"):
