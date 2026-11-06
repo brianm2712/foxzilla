@@ -307,7 +307,10 @@ def main(argv=None):
             if name not in entries:
                 state.pop(name)
         sweep_markers(cfg["upload_dir"], entries)
-        save_state(cfg["state_file"], state)
+        if not args.dry_run:
+            # A dry run touches nothing: saving its state (and the "said"
+            # lines in it) would silence the next real run's log lines.
+            save_state(cfg["state_file"], state)
 
         if processed and not args.dry_run:
             jf_rescan(cfg["jellyfin_host"],

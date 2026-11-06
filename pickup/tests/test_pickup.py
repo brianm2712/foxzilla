@@ -778,6 +778,17 @@ sp = os.path.join(e.base, "status.json")
 mkfile(os.path.join(e.upload, "Film (2020).mkv"), size=500)
 e.run("--status-file", sp, "--dry-run")
 check("dry run wrote no status file", not os.path.exists(sp))
+check("dry run wrote no state file", not os.path.exists(e.state), os.listdir(e.base))
+e = Env()
+f = os.path.join(e.upload, "Slow.Show.S01E01.mkv"); mkfile(f, 500)
+e.run("--dry-run", force=False)
+e.run(force=False)
+said = [l for l in open(e.log).read().splitlines() if "watching Slow.Show" in l]
+check("a dry run does not silence the next real run's lines", len(said) == 2, said)
+before = open(e.state).read()
+os.utime(f, (time.time() - 2 * MP.QUIET_SECONDS,) * 2)
+e.run("--dry-run", force=False)
+check("dry run leaves an existing state file untouched", open(e.state).read() == before)
 
 print("\nreview fixes: ffmpeg is reaped when the progress callback raises")
 import time
