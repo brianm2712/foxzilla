@@ -214,6 +214,9 @@ SWAPPED=0
 say "installing logrotate config to /etc/logrotate.d/foxzilla-pickup"
 mutate "install -m 0644 $BUILD_DIR/logrotate.conf /etc/logrotate.d/foxzilla-pickup && logrotate -d /etc/logrotate.d/foxzilla-pickup"
 
-say "done: $(git log -1 --format='%h %s' HEAD) is live"
-[ "$DRY_RUN" -eq 1 ] && say "(dry run - nothing was changed on the host)"
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "dry run complete - nothing was changed on the host"
+else
+    say "done: $(git log -1 --format='%h %s' HEAD) is live"
+fi
 exit 0
