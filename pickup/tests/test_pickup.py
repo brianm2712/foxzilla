@@ -1071,7 +1071,7 @@ finally:
     handoff.os.walk = real_walk
 check("unreadable dir tolerated (bytes 0)", len(found) == 1 and found[0]["bytes"] == 0, found)
 real_ab = handoff.abandoned_staging
-handoff.abandoned_staging = lambda cfg: (_ for _ in ()).throw(RuntimeError("scan boom"))
+handoff.abandoned_staging = lambda cfg, **k: (_ for _ in ()).throw(RuntimeError("scan boom"))
 try:
     mkfile(os.path.join(e.upload, "Ok (2019).mkv"), 2000)
     rc = e.run()
@@ -1080,6 +1080,49 @@ finally:
 check("a failing scan never breaks the run", rc == 0 and os.path.isdir(os.path.join(e.movies, "Ok (2019)")), e.tail(5))
 check("and logs a WARN", any("WARN" in l and "could not check abandoned staging" in l and "scan boom" in l
                              for l in e.tail(20)), e.tail(8))
+
+print("\nabandoned_staging: an unchanged dir is not re-walked over CIFS every tick  (review)")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+d = os.path.join(e.movies, ".staging", "444-1700000000")
+mkfile(os.path.join(d, "sub", "a.mkv"), 1000)
+os.utime(d, (two_days, two_days))
+walks = []
+real_walk = handoff.os.walk
+def counting_walk(top, *a, **k):
+    walks.append(top)
+    return real_walk(top, *a, **k)
+seen_file = e.state + ".staging.json"
+handoff.os.walk = counting_walk
+try:
+    e.run("--status-file", sp)
+    first = walks.count(d)
+    e.run("--status-file", sp)
+    second = walks.count(d) - first
+    mkfile(os.path.join(d, "b.mkv"), 500)              # changes the dir's mtime
+    os.utime(d, (two_days + 60, two_days + 60))
+    e.run("--status-file", sp)
+    third = walks.count(d) - first - second
+finally:
+    handoff.os.walk = real_walk
+check("first run walks the dir", first == 1, walks)
+check("second run does not walk the unchanged dir", second == 0, walks)
+check("cached size still reported", json.load(open(sp))["staging"][0]["bytes"] == 1500, json.load(open(sp))["staging"])
+check("a changed mtime gets it walked again", third == 1, walks)
+saved = json.load(open(seen_file))
+check("the cache is persisted beside the set",
+      saved.get("paths") == [d] and saved.get("cache", {}).get(d, {}).get("bytes") == 1500, saved)
+with open(seen_file, "w") as fh:
+    json.dump([d], fh)                                 # the old list-only format
+n_warn = len([l for l in open(e.log).read().splitlines() if "abandoned staging" in l])
+e.run("--status-file", sp)
+check("the old list format is still read (no new WARN)",
+      len([l for l in open(e.log).read().splitlines() if "abandoned staging" in l]) == n_warn)
+check("and is upgraded with a cache", json.load(open(seen_file)).get("cache", {}).get(d, {}).get("bytes") == 1500,
+      open(seen_file).read())
+e.run("--status-file", sp, "--dry-run")
+check("dry run leaves the staging file alone", json.load(open(seen_file)).get("paths") == [d])
+
 nul = MP.Progress(""); nul.staging([{"path": "x"}])
 check("Progress.staging inert without path", "staging" not in nul.doc and nul.writes == 0)
 

@@ -421,12 +421,20 @@ def process_item(cfg, name, log, dry_run=False, progress=NULL_PROGRESS):
 STALE_STAGING_SECONDS = 86400   # a staging dir untouched this long is abandoned
 
 
-def abandoned_staging(cfg, now=None):
+def abandoned_staging(cfg, now=None, cache=None):
     """
     Staging dirs a failed run left "for inspection" and nobody came back to.
     Reported only: leftovers are for a human, never deleted to make room.
+
+    cache, if given, is {path: {"mtime": .., "bytes": ..}} from earlier runs:
+    a dir whose mtime is unchanged is not walked again (the walk is over CIFS,
+    every tick). It is updated in place to hold just the dirs found now that
+    were measured successfully.
     """
     now = time.time() if now is None else now
+    old_cache = dict(cache or {})
+    if cache is not None:
+        cache.clear()
     seen, found = set(), []
     for root in (cfg["movies_dest"], cfg["shows_dest"]):
         base = os.path.join(root, ".staging")
@@ -442,16 +450,23 @@ def abandoned_staging(cfg, now=None):
                 continue
             if not stat.S_ISDIR(st.st_mode) or now - st.st_mtime < STALE_STAGING_SECONDS:
                 continue
-            total = 0
-            try:
-                for dp, _dn, fns in os.walk(path):
-                    for f in fns:
-                        try:
-                            total += os.lstat(os.path.join(dp, f)).st_size
-                        except OSError:
-                            pass
-            except OSError:
-                pass
+            hit = old_cache.get(path)
+            if isinstance(hit, dict) and hit.get("mtime") == st.st_mtime \
+                    and isinstance(hit.get("bytes"), int):
+                total, measured = hit["bytes"], True
+            else:
+                total, measured = 0, True
+                try:
+                    for dp, _dn, fns in os.walk(path):
+                        for f in fns:
+                            try:
+                                total += os.lstat(os.path.join(dp, f)).st_size
+                            except OSError:
+                                pass
+                except OSError:
+                    measured = False    # not cached: measure again next run
+            if cache is not None and measured:
+                cache[path] = {"mtime": st.st_mtime, "bytes": total}
             found.append({"path": path, "bytes": total,
                           "age_days": round((now - st.st_mtime) / 86400, 1)})
     return found
@@ -466,26 +481,34 @@ def staging_seen_file(cfg):
 def report_staging(cfg, log, progress, dry_run=False):
     """Publish abandoned staging; WARN only when the set changes. Never raises."""
     try:
-        found = abandoned_staging(cfg)
-        progress.staging(found)
-        paths = sorted(r["path"] for r in found)
         seen_file = staging_seen_file(cfg)
         try:
             with open(seen_file) as fh:
-                before = json.load(fh)
+                saved = json.load(fh)
         except (OSError, ValueError):
-            before = []
+            saved = []
+        # Older runs saved just the list of paths; now {"paths", "cache"}.
+        if isinstance(saved, dict):
+            before = saved.get("paths") or []
+            old_cache = saved.get("cache") if isinstance(saved.get("cache"), dict) else {}
+        else:
+            before = saved if isinstance(saved, list) else []
+            old_cache = {}
+        cache = dict(old_cache)
+        found = abandoned_staging(cfg, cache=cache)
+        progress.staging(found)
+        paths = sorted(r["path"] for r in found)
         if paths != before:
             if found:
                 total = sum(r["bytes"] for r in found)
                 listing = ", ".join(f"{r['path']} ({r['age_days']}d)" for r in found)
                 log(f"abandoned staging (not deleted): {len(found)} dir(s), "
                     f"{human(total)} - {listing}", "WARN")
-            if not dry_run:
-                tmp = seen_file + ".tmp"
-                with open(tmp, "w") as fh:
-                    json.dump(paths, fh)
-                os.replace(tmp, seen_file)
+        if not dry_run and (paths != before or cache != old_cache or not isinstance(saved, dict)):
+            tmp = seen_file + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump({"paths": paths, "cache": cache}, fh)
+            os.replace(tmp, seen_file)
     except Exception as e:
         try:
             log(f"could not check abandoned staging: {type(e).__name__}: {e}", "WARN")
