@@ -6,7 +6,7 @@ import sys
 
 from . import config
 from .backends import make_backend
-from .config import DEFAULT_SITES, load_secrets, load_sites, needs_password, save_sites
+from .config import DEFAULT_SITES, get_secret, load_sites, needs_password, save_sites
 from .util import human
 
 USAGE = __import__("foxzilla").__doc__
@@ -57,7 +57,7 @@ def check_site(name):
 
     password = ""
     if needs_password(site):
-        password = load_secrets().get(site["name"], "")
+        password = get_secret(site["name"])
         if not password:
             password = getpass.getpass("password  : ")
 

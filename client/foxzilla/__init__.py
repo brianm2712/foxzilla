@@ -25,8 +25,9 @@ from .backends import (CHUNK, Backend, Entry, FTPBackend, LocalBackend,
                        _pump, _s3_quote, clean_typed_path, make_backend,
                        safe_name, under_root)
 from .config import (CONFIG_DIR, DEFAULT_SITES, SECRETS_FILE, SITES_FILE,
-                     load_secrets, load_sites, needs_password, save_secret,
-                     save_sites)
+                     delete_secret, get_secret, load_secrets, load_sites,
+                     move_site_secrets, needs_password, rename_site_secrets,
+                     save_secret, save_sites, secret_key_for, set_secret)
 from .queue import (COMPLETE_SUFFIX, PART_SUFFIX, Batch, Job, Queue, marker_path,
                     write_marker)
 from .scan import (CLEAR, CONFLICT, IDENTICAL, SAME_SIZE, UNSAFE, WANTED, PlanItem,

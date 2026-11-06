@@ -16,6 +16,8 @@ except Exception as e:                                       # noqa: BLE001
     print(f"skipped: no usable Tk here ({type(e).__name__})")
     raise SystemExit(0)
 import foxzilla as F
+from foxzilla import config as C
+C.USE_KEYCHAIN = False            # hermetic: secrets go to the scratch secrets.json
 
 ok = True
 def check(l, c, e=""):
@@ -90,6 +92,29 @@ check("file arrived over FTP", os.path.exists(os.path.join(ftp_root, "hello.txt"
 check("through a backend that is not the pane's", sent and sent[-1].dst is not app.right.backend,
       sent)
 check("and the pane can still browse", "hello.txt" in [e.name for e in app.right.backend.listdir("/")])
+
+print("\na typed password is remembered only when asked, and only once it worked")
+from foxzilla import gui as G
+app.sites.append({"name": "FTP2", "type": "ftp", "host": "127.0.0.1", "port": fport,
+                  "user": ftpmock.USER})
+app.right.reload_sites("FTP2")
+G.PasswordDialog.ask = classmethod(lambda cls, parent, name: ("wrong", True))
+app.right.connect(); settle(800)
+check("a wrong password is not saved", F.get_secret("FTP2") == "")
+G.PasswordDialog.ask = classmethod(lambda cls, parent, name: (ftpmock.PASSWORD, False))
+app.right.connect(); settle(800)
+check("connected without remembering", app.right.backend.label == "FTP2"
+      and F.get_secret("FTP2") == "")
+G.PasswordDialog.ask = classmethod(lambda cls, parent, name: (ftpmock.PASSWORD, True))
+app.right.connect(); settle(800)
+check("remembered after a successful connect", F.get_secret("FTP2") == ftpmock.PASSWORD, app.logbox.get("1.0","end").strip().splitlines()[-4:])
+G.PasswordDialog.ask = classmethod(lambda cls, parent, name: (_ for _ in ()).throw(
+    AssertionError("asked again")))
+app.right.connect(); settle(800)
+check("and not asked for next time", app.right.backend is not None)
+app.focus_pane = app.right
+app.forget_password()
+check("Forget saved password removes it", F.get_secret("FTP2") == "")
 
 print("\nquit asks first while transfers are running")
 import time

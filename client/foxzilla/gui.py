@@ -11,7 +11,10 @@ import time
 from . import config
 from .backends import (Backend, Entry, TransferError, clean_typed_path,
                        make_backend, safe_name)
-from .config import load_secrets, load_sites, needs_password, save_sites
+from .config import (delete_secret, get_secret, load_sites, move_site_secrets,
+                     needs_password, rename_site_secrets, save_sites,
+                     secret_key_for, secret_store_name, set_secret,
+                     SITE_SECRET_FIELDS)
 from .queue import Batch, Job, Queue, marker_path, write_marker
 from .scan import (CLEAR, CONFLICT, IDENTICAL, SAME_SIZE, UNSAFE,
                    plan_transfer, summarise)
@@ -222,13 +225,15 @@ class Pane(ttk.Frame):
         site = next((s for s in self.app.sites if s["name"] == name), None)
         if not site:
             return
-        password = ""
+        password, remember, stored = "", False, False
         if needs_password(site):
-            password = load_secrets().get(name, "")
+            password = get_secret(name)
+            stored = bool(password)
             if not password:
-                password = simpledialog.askstring(
-                    "Password", f"Password for {name}:", show="•",
-                    parent=self.app.root) or ""
+                password, remember = PasswordDialog.ask(self.app.root, name)
+                if password is None:
+                    self.set_status("not connected")
+                    return
         self.set_status(f"connecting to {name}…")
         old = self.backend
 
@@ -244,6 +249,15 @@ class Pane(ttk.Frame):
             # Kept so the queue can open its own connection to the same site.
             self.site, self.password = dict(site), password
             self.app.log(f"connected: {backend.label}")
+            if remember:
+                # Saved only after it worked, so a typo is never remembered.
+                self.app.run_async(
+                    lambda: set_secret(name, password),
+                    lambda where: self.app.log(
+                        f"password for {name} saved to "
+                        + ("the macOS Keychain" if where == "keychain"
+                           else "secrets.json (0600; no keychain here)")),
+                    lambda e: self.app.log(f"could not save the password: {e}"))
             self.chdir(backend.home())
             missing = backend.is_local and backend.start_missing()
             if missing:
@@ -256,7 +270,13 @@ class Pane(ttk.Frame):
                     "Connect again. Showing your home folder for now.",
                     parent=self.app.root)
 
-        self.app.run_async(work, ok, self.fail)
+        def failed(exc):
+            self.fail(exc)
+            if stored:
+                self.app.log(f"{name} used a saved password — if it has changed, "
+                             "use Sites › Forget saved password")
+
+        self.app.run_async(work, ok, failed)
 
     # -- navigation -------------------------------------------------------
 
@@ -481,6 +501,46 @@ class ScanDialog(tk.Toplevel):
         self.destroy()
 
 
+class PasswordDialog(tk.Toplevel):
+    """Ask for a site's password, with the option to remember it."""
+
+    @classmethod
+    def ask(cls, parent, name):
+        """(password, remember), or (None, False) if cancelled."""
+        dlg = cls(parent, name)
+        return dlg.result
+
+    def __init__(self, parent, name):
+        super().__init__(parent)
+        self.title("Password")
+        self.transient(parent)
+        self.configure(bg=THEME["bg"])
+        self.result = (None, False)
+        body = ttk.Frame(self, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=f"Password for {name}:").pack(anchor="w")
+        self.pw = tk.StringVar()
+        entry = ttk.Entry(body, textvariable=self.pw, show="•", width=34)
+        entry.pack(fill="x", pady=(4, 6))
+        self.remember = tk.BooleanVar(value=False)
+        ttk.Checkbutton(body, variable=self.remember,
+                        text=f"Remember it in {secret_store_name()}").pack(anchor="w")
+        btns = ttk.Frame(body)
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(btns, text="Connect", style="Accent.TButton",
+                   command=self._ok).pack(side="right", padx=6)
+        self.bind("<Return>", lambda e: self._ok())
+        self.bind("<Escape>", lambda e: self.destroy())
+        entry.focus_set()
+        self.grab_set()
+        self.wait_window(self)
+
+    def _ok(self):
+        self.result = (self.pw.get(), bool(self.remember.get()))
+        self.destroy()
+
+
 class SiteDialog(tk.Toplevel):
     """Add or edit a saved site. Fields shown depend on the protocol."""
 
@@ -496,7 +556,8 @@ class SiteDialog(tk.Toplevel):
                  ("insecure_tls", "Skip certificate check: yes/no (default no)")],
         "s3": [("bucket", "Bucket"), ("region", "Region"),
                ("endpoint", "Endpoint (blank = AWS)"),
-               ("access_key", "Access key"), ("secret_key", "Secret key")],
+               ("access_key", "Access key (kept in the secret store)"),
+               ("secret_key", "Secret key (blank = keep the saved one)")],
         "dav": [("url", "Base URL"), ("user", "User")],
     }
 
@@ -573,6 +634,9 @@ class App:
         self._set_window_icon(root)
         root.geometry("1100x680")
         self.sites = load_sites()
+        self._moved_secrets = move_site_secrets(self.sites)
+        if self._moved_secrets:
+            save_sites(self.sites)
         self.focus_pane = None
         self._ui_queue: queue.Queue = queue.Queue()
         self._pending_refresh = None
@@ -682,6 +746,8 @@ class App:
         self.status.pack(fill="x", side="bottom")
 
         root.protocol("WM_DELETE_WINDOW", self.quit)
+        if self._moved_secrets:
+            self.log(f"moved S3 keys out of sites.json into {secret_store_name()}")
         self._pump()
         self.left.connect()
 
@@ -719,6 +785,7 @@ class App:
         sites.add_command(label="Add site…", command=self.add_site)
         sites.add_command(label="Edit site…", command=self.edit_site)
         sites.add_command(label="Remove site", command=self.remove_site)
+        sites.add_command(label="Forget saved password", command=self.forget_password)
         sites.add_separator()
         sites.add_command(label=f"Open {config.SITES_FILE}", command=self.reveal_config)
         sites.add_separator()
@@ -733,6 +800,7 @@ class App:
     def add_site(self):
         dlg = SiteDialog(self.root)
         if dlg.result:
+            move_site_secrets([dlg.result])
             self.sites.append(dlg.result)
             self._sites_changed(dlg.result["name"])
 
@@ -744,13 +812,26 @@ class App:
             return
         dlg = SiteDialog(self.root, self.sites[idx])
         if dlg.result:
+            rename_site_secrets(name, dlg.result["name"])
+            move_site_secrets([dlg.result])
             self.sites[idx] = dlg.result
             self._sites_changed(dlg.result["name"])
+
+    def forget_password(self):
+        pane = self.focus_pane or self.right
+        name = pane.site_var.get()
+        if name:
+            delete_secret(name)
+            self.log(f"forgot the saved password for {name}")
 
     def remove_site(self):
         pane = self.focus_pane or self.right
         name = pane.site_var.get()
-        if name and messagebox.askyesno("Remove site", f"Remove {name}?"):
+        if name and messagebox.askyesno("Remove site", f"Remove {name}?\n\n"
+                                        "Its saved password and keys are forgotten too."):
+            for key in [name] + [secret_key_for(name, f) for fields in
+                                 SITE_SECRET_FIELDS.values() for f in fields]:
+                delete_secret(key)
             self.sites = [s for s in self.sites if s["name"] != name]
             self._sites_changed()
 

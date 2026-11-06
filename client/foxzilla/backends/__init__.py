@@ -10,6 +10,7 @@ from .local import LocalBackend
 from .s3 import S3Backend, _iso_time, _s3_quote
 from .sftp import SFTPBackend
 from .webdav import WebDAVBackend, _http_time
+from ..config import site_secret
 
 
 def _flag(value):
@@ -45,11 +46,11 @@ def make_backend(site, password=""):
     elif kind == "s3":
         backend = S3Backend(
             bucket=site["bucket"],
-            access_key=site.get("access_key") or os.environ.get("AWS_ACCESS_KEY_ID", ""),
-            secret_key=site.get("secret_key") or os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
+            access_key=site_secret(site, "access_key") or os.environ.get("AWS_ACCESS_KEY_ID", ""),
+            secret_key=site_secret(site, "secret_key") or os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
             region=site.get("region", "us-east-1"),
             endpoint=site.get("endpoint"),
-            session_token=site.get("session_token") or os.environ.get("AWS_SESSION_TOKEN"),
+            session_token=site_secret(site, "session_token") or os.environ.get("AWS_SESSION_TOKEN"),
             label=name,
         )
     elif kind in ("dav", "webdav"):
