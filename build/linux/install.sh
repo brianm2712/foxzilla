@@ -41,7 +41,7 @@ cat > "$APPS/foxzilla.desktop" <<DESK
 Type=Application
 Name=Foxzilla
 Comment=Small SFTP/FTP/S3/WebDAV file transfer client
-Exec=python3 $ROOT/client/foxzilla.py
+Exec=python3 "$ROOT/client/foxzilla.py"
 Icon=foxzilla
 Terminal=false
 Categories=Network;FileTransfer;
