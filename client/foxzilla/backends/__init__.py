@@ -12,6 +12,13 @@ from .sftp import SFTPBackend
 from .webdav import WebDAVBackend, _http_time
 
 
+def _flag(value):
+    """A site setting as a bool: JSON true, or 'yes'/'true'/'1' typed in the dialog."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "yes", "true", "on", "y")
+    return bool(value)
+
+
 def make_backend(site, password=""):
     """Build the backend a site describes, ready to connect."""
     kind = site.get("type", "local")
@@ -32,6 +39,8 @@ def make_backend(site, password=""):
             password=password, port=site.get("port", 21),
             tls=(kind == "ftps" or bool(site.get("tls"))),
             passive=site.get("passive", True), label=name,
+            ca_file=site.get("ca_file") or None,
+            insecure_tls=_flag(site.get("insecure_tls")),
         )
     elif kind == "s3":
         backend = S3Backend(

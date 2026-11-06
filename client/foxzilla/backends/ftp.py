@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import ssl
 import time
 from ftplib import FTP, FTP_TLS
 
@@ -14,15 +15,28 @@ class FTPBackend(Backend):
     max_parallel = 1        # one control connection, so strictly serial
 
     def __init__(self, host, user="anonymous", password="", port=21,
-                 tls=False, passive=True, label=None):
+                 tls=False, passive=True, label=None, ca_file=None,
+                 insecure_tls=False):
         self.host, self.port = host, port or 21
         self.user, self.password = user, password
         self.tls, self.passive = tls, passive
+        # FTPS checks the server certificate like a browser does. A homelab
+        # box with a self-signed cert either names its CA file here, or opts
+        # out explicitly with insecure_tls - never silently.
+        self.ca_file = ca_file or None
+        self.insecure_tls = bool(insecure_tls)
         self.label = label or f"{'ftps' if tls else 'ftp'}://{user}@{host}"
         self.ftp = None
 
+    def _tls_context(self):
+        ctx = ssl.create_default_context(cafile=self.ca_file)
+        if self.insecure_tls:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
     def connect(self):
-        self.ftp = FTP_TLS() if self.tls else FTP()
+        self.ftp = FTP_TLS(context=self._tls_context()) if self.tls else FTP()
         self.ftp.connect(self.host, self.port, timeout=30)
         self.ftp.login(self.user, self.password)
         if self.tls:
