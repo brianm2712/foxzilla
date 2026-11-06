@@ -52,6 +52,8 @@ def run_one(path, timeout, python=sys.executable):
             [python, path], cwd=os.path.dirname(path),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, timeout=timeout,
+            # unbuffered, so a file that times out still shows how far it got
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
         out = proc.stdout.decode("utf-8", "replace")
         rc = proc.returncode

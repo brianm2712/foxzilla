@@ -1,6 +1,7 @@
 """SFTP, via the OpenSSH client."""
 from __future__ import annotations
 
+import atexit
 import fcntl
 import os
 import posixpath
@@ -8,6 +9,7 @@ import pty
 import re
 import select
 import shlex
+import shutil
 import subprocess
 import tempfile
 import termios
@@ -51,15 +53,39 @@ class SFTPBackend(Backend):
         self.password = password or ""
         self.transcript: list[str] = []
         self.label = label or f"sftp://{user + '@' if user else ''}{host}"
-        # Kept short deliberately: a unix socket path is capped near 104 bytes
-        # and ssh expands %r/%h/%p into this before binding, so a long temp
-        # directory plus a long hostname will silently break multiplexing.
-        # macOS's gettempdir() is a ~50-character per-user path, so prefer
-        # /tmp where it is usable.
+        # A transfer whose byte count has not moved for this long is killed.
+        # Keepalives catch a dead connection; this catches a live one that
+        # has stopped moving data. None or 0 turns it off.
+        self.stall_seconds = self.STALL_SECONDS
+        self._ctl_dir = None
+        self._ctl = ""
+        self._new_ctl_dir()
+        self._home = None
+
+    STALL_SECONDS = 300
+
+    def _new_ctl_dir(self):
+        """
+        A private (0700) directory for this backend's ControlMaster socket.
+
+        Private, so no other backend - or other user of a shared machine -
+        can ride this one's authenticated connection; the old fixed
+        /tmp/.foxzilla-<uid>-%r@%h-%p name let any second connection to the
+        same user@host reuse it, whatever password it was given.
+
+        Kept short deliberately: a unix socket path is capped near 104 bytes,
+        so this prefers /tmp to macOS's long per-user temp directory, and
+        names the socket %C (a fixed-length hash of user, host and port).
+        """
         base = "/tmp" if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK) \
             else tempfile.gettempdir()
-        self._ctl = os.path.join(base, f".{APP}-{os.getuid()}-%r@%h-%p")
-        self._home = None
+        self._ctl_dir = tempfile.mkdtemp(prefix=f"{APP}-", dir=base)
+        self._ctl = os.path.join(self._ctl_dir, "%C")
+        atexit.register(shutil.rmtree, self._ctl_dir, True)
+
+    def _ensure_ctl_dir(self):
+        if not self._ctl_dir or not os.path.isdir(self._ctl_dir):
+            self._new_ctl_dir()
 
     # -- plumbing ---------------------------------------------------------
 
@@ -68,6 +94,7 @@ class SFTPBackend(Backend):
         return f"{self.user}@{self.host}" if self.user else self.host
 
     def _base_args(self, for_ssh=False):
+        self._ensure_ctl_dir()
         args = [
             # BatchMode must be off for a password prompt to happen at all.
             "-o", "BatchMode=no" if self.password else "BatchMode=yes",
@@ -75,6 +102,10 @@ class SFTPBackend(Backend):
             "-o", f"ControlPath={self._ctl}",
             "-o", "ControlPersist=120",
             "-o", "ConnectTimeout=15",
+            # Without these a dropped connection hangs a transfer forever:
+            # TCP alone can take hours to notice. One minute of silence ends it.
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=4",
             # Trust on first use, the same bargain a GUI client strikes when
             # it shows a host-key dialog: an unknown host is pinned on first
             # sight, a key that has *changed* is still refused outright. The
@@ -128,7 +159,7 @@ class SFTPBackend(Backend):
     # differently, so also match it anywhere in the chunk just read.
     _PROMPT_ANY = re.compile(rb"(?i)(password|passcode|verification code)\s*:")
 
-    def _run_with_password(self, script, timeout):
+    def _run_with_password(self, script, timeout, abort=None):
         """
         Drive sftp interactively so it will actually ask for a password.
 
@@ -180,6 +211,9 @@ class SFTPBackend(Backend):
                         sent = True
                 elif proc.poll() is not None:
                     break
+                if abort is not None and abort.is_set():
+                    proc.kill()
+                    raise TransferError(getattr(abort, "reason", "") or "cancelled")
                 if time.monotonic() > deadline:
                     proc.kill()
                     if not answered:
@@ -198,6 +232,8 @@ class SFTPBackend(Backend):
                 pass
             if proc and proc.poll() is None:
                 proc.kill()
+            if proc:
+                proc.wait()
 
         text = out.decode("utf-8", "replace")
         self.transcript = transcript + [ln for ln in text.splitlines() if ln.strip()]
@@ -209,32 +245,57 @@ class SFTPBackend(Backend):
             raise TransferError(f"authentication failed for {self.target}")
         return joined
 
-    def _run(self, commands, timeout=120, tolerant=True):
-        """Run a batch of sftp commands, returning its output."""
+    def _run(self, commands, timeout=120, tolerant=True, abort=None):
+        """
+        Run a batch of sftp commands, returning its output.
+
+        `abort` is an Event: once set, the sftp process is killed and this
+        raises, so a cancelled or stalled transfer really stops rather than
+        carrying on in the background after its worker has moved on.
+        """
         if tolerant:
             # A leading '-' tells sftp to keep going past a failing command,
             # so one missing file cannot abort the whole batch.
             commands = [c if c.startswith("-") else "-" + c for c in commands]
         script = "\n".join(commands) + "\n"
         if self.password:
-            return self._run_with_password(script, timeout)
+            return self._run_with_password(script, timeout, abort)
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 ["sftp", "-b", "-", *self._base_args(), self.target],
-                input=script,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True,
             )
         except FileNotFoundError:
             raise TransferError("the `sftp` command is not installed")
-        except subprocess.TimeoutExpired:
-            raise TransferError(f"sftp timed out after {timeout}s")
+        deadline = None if timeout is None else time.monotonic() + timeout
+        pending = script
+        try:
+            while True:
+                try:
+                    # Retrying communicate() after a timeout loses no output.
+                    # The input goes on the first call only (newer Pythons
+                    # refuse it on a retry).
+                    stdout, stderr = proc.communicate(pending, timeout=0.25)
+                    break
+                except subprocess.TimeoutExpired:
+                    pending = None
+                    if abort is not None and abort.is_set():
+                        raise TransferError(getattr(abort, "reason", "") or "cancelled")
+                    if deadline is not None and time.monotonic() > deadline:
+                        raise TransferError(f"sftp timed out after {timeout}s")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except (subprocess.TimeoutExpired, ValueError, OSError):
+                    pass
         # sftp reports per-command failures ("Can't ls", "remote open ...
         # failed") on stderr while the batch itself still exits 0, so the
         # two streams have to be read together or errors vanish silently.
-        out = (proc.stdout or "") + (proc.stderr or "")
-        if proc.returncode != 0 and not proc.stdout:
+        out = (stdout or "") + (stderr or "")
+        if proc.returncode != 0 and not stdout:
             raise TransferError(self._explain(out))
         return out
 
@@ -266,10 +327,15 @@ class SFTPBackend(Backend):
             raise TransferError(f"could not open an SFTP session to {self.host}")
 
     def close(self):
-        subprocess.run(
-            ["ssh", "-O", "exit", "-o", f"ControlPath={self._ctl}", self.target],
-            capture_output=True,
-        )
+        if self._ctl_dir and os.path.isdir(self._ctl_dir):
+            try:
+                subprocess.run(
+                    ["ssh", "-O", "exit", "-o", f"ControlPath={self._ctl}", self.target],
+                    capture_output=True, timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            shutil.rmtree(self._ctl_dir, ignore_errors=True)
 
     def home(self):
         return self.start or self._home or "/"
@@ -337,31 +403,59 @@ class SFTPBackend(Backend):
         that may or may not exist, watch the file grow. For a download that
         is a free local stat; for an upload it is one cheap `stat` over the
         already-multiplexed SSH connection.
+
+        The same reading drives the stall watchdog: once the size has been
+        readable at least once, `stall_seconds` without it growing kills the
+        transfer. If `progress` raises (the queue's way of saying "cancel"),
+        the sftp process is killed before the exception goes any further.
         """
         result = {}
+        abort = threading.Event()
+        abort.reason = ""
 
         def run():
             try:
-                result["out"] = self._run([command], timeout=None)
+                result["out"] = self._run([command], timeout=None, abort=abort)
             except Exception as e:                      # noqa: BLE001
                 result["err"] = e
 
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
-        started = time.monotonic()
-        interval = 0.4 if watch is None or total <= 0 else 0.5
-        while worker.is_alive():
-            worker.join(interval)
-            if not (progress and watch):
-                continue
-            try:
-                done = watch()
-            except Exception:                           # noqa: BLE001
-                continue
-            if done < 0:
-                continue
-            elapsed = time.monotonic() - started
-            progress(done, total, done / elapsed if elapsed > 0.5 else 0)
+        started = last_moved = time.monotonic()
+        done, readable = 0, False
+        try:
+            while worker.is_alive():
+                worker.join(0.5)
+                if not worker.is_alive():
+                    break
+                now = time.monotonic()
+                seen = -1
+                if watch:
+                    try:
+                        seen = watch()
+                    except Exception:                   # noqa: BLE001
+                        seen = -1
+                if seen >= 0:
+                    readable = True
+                    if seen > done:
+                        done, last_moved = seen, now
+                if (self.stall_seconds and readable
+                        and now - last_moved > self.stall_seconds):
+                    abort.reason = (f"{verb} stalled: no progress for "
+                                    f"{int(now - last_moved)}s")
+                    abort.set()
+                    break
+                if progress:
+                    elapsed = now - started
+                    progress(done, total, done / elapsed if elapsed > 0.5 else 0)
+        except BaseException:
+            abort.reason = abort.reason or "cancelled"
+            abort.set()
+            worker.join(15)
+            raise
+        if abort.is_set():
+            worker.join(15)
+            raise TransferError(abort.reason)
 
         if "err" in result:
             raise result["err"]
@@ -385,9 +479,8 @@ class SFTPBackend(Backend):
         except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
             return -1
 
-    def read_to(self, path, local_path, progress=None, resume=False):
-        # reget continues a partial local file instead of starting over.
-        verb = "reget" if resume and os.path.exists(local_path) else "get"
+    def read_to(self, path, local_path, progress=None):
+        verb = "get"
         total = self.size_of(path)
 
         def watch():
@@ -399,8 +492,8 @@ class SFTPBackend(Backend):
         self._transfer(f"-{verb} {self.q(path)} {self.q(local_path)}",
                        verb, total, watch, progress)
 
-    def write_from(self, local_path, path, progress=None, resume=False):
-        verb = "reput" if resume and self._remote_size(path) > 0 else "put"
+    def write_from(self, local_path, path, progress=None):
+        verb = "put"
         try:
             total = os.path.getsize(local_path)
         except OSError:
