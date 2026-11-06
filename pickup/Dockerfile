@@ -33,6 +33,7 @@ ENV MEDIA_PICKUP_CREDENTIALS=/config/credentials.json \
     LOCK_FILE=/tmp/media_pickup.lock \
     JELLYFIN_HOST=jellyfin:8096 \
     PARK_DIR= \
+    STATUS_FILE= \
     TZ=UTC \
     INTERVAL=60 \
     RUN_ONCE=

@@ -6,7 +6,7 @@ set -eu
 args="--upload-dir $UPLOAD_DIR --movies-dest $MOVIES_DEST --shows-dest $SHOWS_DEST \
 --state-file $STATE_FILE --log-file $LOG_FILE --lock-file $LOCK_FILE \
 --receipts-dir $RECEIPTS_DIR --jellyfin-host $JELLYFIN_HOST \
-${PARK_DIR:+--park-dir $PARK_DIR}"
+${PARK_DIR:+--park-dir $PARK_DIR} ${STATUS_FILE:+--status-file $STATUS_FILE}"
 
 # Pass through management subcommands: docker run ... --login
 if [ "$#" -gt 0 ]; then
