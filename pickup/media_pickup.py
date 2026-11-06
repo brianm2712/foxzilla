@@ -1378,6 +1378,19 @@ def main(argv=None):
             marker = marker_for(cfg["upload_dir"], name)
             declared = os.path.exists(marker)
 
+            if not now["files"] and not now["partial"]:
+                # Nothing usable (an empty folder, or only junk like
+                # .DS_Store). Processing it can only fail, and it would fail
+                # every tick forever. Hold it instead: the shape changes when
+                # files arrive, and then it is no longer empty. A marker does
+                # not change that - there is still nothing to file.
+                if prev.get("held") != "empty":
+                    log(f"holding {name}: no usable files (empty folder) - "
+                        f"it will be picked up when files appear", "WARN")
+                state[name] = {"shape": now["shape"], "stable": 0, "held": "empty"}
+                rows[name] = queue_row(name, now, "held: empty")
+                continue
+
             imgs = [p for p in now["shape"] if os.path.splitext(p)[1].lower() in DISC_IMAGE_EXTS]
             convertible = bool(imgs) and os.path.isfile(path) and ffmpeg_available()
             if imgs and not convertible:

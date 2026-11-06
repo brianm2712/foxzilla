@@ -781,6 +781,30 @@ _pl, sk, _cf = MP.commit(stg, dst, os.path.join(e.base, "q"), lambda *a, **k: No
 check("identical file skipped", sk == ["a.mkv"], sk)
 check("hashing both copies touched the card", getattr(r, "touches", 0) >= 2, getattr(r, "touches", 0))
 
+print("\nempty_items_are_held_not_failed  (live log: 3,230 'no usable files' FAILED lines)")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+os.makedirs(os.path.join(e.upload, "Empty Folder"))
+mkfile(os.path.join(e.upload, "Junk Only", ".DS_Store"), 10)
+os.makedirs(os.path.join(e.upload, "Marked Empty"))
+open(MP.marker_for(e.upload, "Marked Empty"), "w").write("done")
+e.run("--status-file", sp); e.run("--status-file", sp); e.run("--status-file", sp)
+lines = open(e.log).read().splitlines()
+for n in ("Empty Folder", "Junk Only", "Marked Empty"):
+    warns = [l for l in lines if f"holding {n}: no usable files" in l]
+    check(f"{n}: held with one WARN across 3 runs", len(warns) == 1 and "WARN" in warns[0], warns)
+    check(f"{n}: still in the inbox", os.path.isdir(os.path.join(e.upload, n)))
+check("no FAILED lines for empty items", not any("FAILED" in l for l in lines), [l for l in lines if "FAILED" in l])
+check("a marker does not bypass the hold", os.path.exists(MP.marker_for(e.upload, "Marked Empty")))
+rows = {r["name"]: r for r in json.load(open(sp))["queue"]}
+check("empty items show 'held: empty' in the queue",
+      all(rows.get(n, {}).get("state") == "held: empty" for n in ("Empty Folder", "Junk Only", "Marked Empty")), rows)
+mkfile(os.path.join(e.upload, "Empty Folder", "Film.mkv"), 2048)
+e.run("--status-file", sp)
+check("files appearing in a held empty folder get it filed",
+      not os.path.exists(os.path.join(e.upload, "Empty Folder")) and videos_under(e.movies) != [],
+      (videos_under(e.movies), e.tail(4)))
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]
