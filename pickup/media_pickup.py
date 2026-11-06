@@ -192,8 +192,10 @@ class Progress:
     WINDOW = 30.0       # rolling window for the rate
     MIN_SPAN = 5.0      # no rate until the samples span this long
 
-    def __init__(self, path, clock=time.time, log=None):
-        self.path, self.clock, self.log = path, clock, log
+    def __init__(self, path, clock=time.time, mono=time.monotonic, log=None):
+        # clock: wall time, for the timestamps shown on the dashboard.
+        # mono: monotonic, for pacing (throttle, rate) so a clock step can't stall it.
+        self.path, self.clock, self.mono, self.log = path, clock, mono, log
         self.writes = 0
         self._last_write = None
         self._samples = []
@@ -211,10 +213,14 @@ class Progress:
             return None
 
     def queue(self, rows):
+        if not self.path:
+            return
         active = (self.doc["active"] or {}).get("name")
-        self.doc["queue"] = [r for r in rows if r.get("name") != active]
+        self.doc["queue"] = [dict(r) for r in rows if r.get("name") != active]
 
     def begin(self, name, phase, total, unit="bytes", files_total=None):
+        if not self.path:
+            return
         now = self.clock()
         prev = self.doc["active"] or {}
         self.doc["state"] = "active"
@@ -226,15 +232,19 @@ class Progress:
             "item_started": prev.get("item_started", now) if prev.get("name") == name else now,
         }
         self.doc["queue"] = [r for r in self.doc["queue"] if r.get("name") != name]
-        self._samples = [(now, 0)]
+        self._samples = [(self.mono(), 0)]
         self._write(force=True)
 
     def advance(self, n, file=None):
+        if not self.path:
+            return
         a = self.doc["active"]
         if a:
             self.set_done(a["done"] + n, file)
 
     def set_done(self, done, file=None):
+        if not self.path:
+            return
         a = self.doc["active"]
         if not a:
             return
@@ -244,6 +254,8 @@ class Progress:
         self._write()
 
     def file_done(self, file=None):
+        if not self.path:
+            return
         a = self.doc["active"]
         if not a:
             return
@@ -255,6 +267,8 @@ class Progress:
         self._write()
 
     def finish(self, name, result, error=None):
+        if not self.path:
+            return
         self.doc["active"] = None
         self.doc["state"] = "idle"
         self.doc["last"] = {"name": name, "result": result,
@@ -262,11 +276,14 @@ class Progress:
         self._write(force=True)
 
     def idle(self):
+        if not self.path:
+            return
         self.doc["active"] = None
         self.doc["state"] = "idle"
         self._write(force=True)
 
     def _rate(self, now):
+        # unit="files" phases (fast renames) intentionally get no rate/ETA.
         a = self.doc["active"]
         if not a or a["unit"] == "files":
             return
@@ -277,30 +294,40 @@ class Progress:
         if t1 - t0 < self.MIN_SPAN:
             a["rate"], a["eta_s"] = None, None
             return
-        rate = (d1 - d0) / (t1 - t0)
+        rate = max((d1 - d0) / (t1 - t0), 0.0)
         a["rate"] = round(rate, 3)
-        a["eta_s"] = round((a["total"] - a["done"]) / rate, 1) if rate > 0 else None
+        total = a["total"]
+        a["eta_s"] = (round((total - a["done"]) / rate, 1)
+                      if isinstance(total, (int, float)) and rate > 0 else None)
 
     def _write(self, force=False):
         if not self.path:
             return
-        now = self.clock()
+        now = self.mono()
         if not force and self._last_write is not None and now - self._last_write < self.THROTTLE:
             return
         self._last_write = now
-        self._rate(now)
-        self.doc["updated"] = now
         tmp = self.path + ".tmp"
         try:
+            self._rate(now)
+            self.doc["updated"] = self.clock()
+            text = json.dumps(self.doc, default=str)
             with open(tmp, "w") as fh:
-                json.dump(self.doc, fh)
+                fh.write(text)
             os.chmod(tmp, 0o644)
             os.replace(tmp, self.path)
             self.writes += 1
             self._failing = False
-        except OSError as e:
+        except Exception as e:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
             if not self._failing and self.log:
-                self.log(f"could not write status file {self.path}: {e}", "WARN")
+                try:
+                    self.log(f"could not write status file {self.path}: {e}", "WARN")
+                except Exception:
+                    pass
             self._failing = True
 
 

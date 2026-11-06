@@ -470,7 +470,7 @@ print("\nprogress: throttled, atomic, rate/eta from a rolling window")
 e = Env()
 sp = os.path.join(e.base, "status", "status.json"); os.makedirs(os.path.dirname(sp))
 t = [100.0]
-p = MP.Progress(sp, clock=lambda: t[0])
+p = MP.Progress(sp, clock=lambda: t[0], mono=lambda: t[0])
 p.begin("Film", "copying", 1000, files_total=2)
 check("begin writes immediately", p.writes == 1 and os.path.exists(sp), p.writes)
 t[0] = 100.5; p.advance(100, file="a.mkv")
@@ -585,6 +585,65 @@ cfg = dict(MP.DEFAULTS, upload_dir=e.upload, movies_dest=e.movies, shows_dest=e.
            receipts_dir=e.receipts)
 MP.process_item(cfg, "Show S01", lambda *a, **k: None, progress=r)
 check("phases in order", [p for _, p, _ in r.phases] == ["hashing", "verifying", "committing"], r.phases)
+
+print("\nprogress: hardening (nothing escapes, monotonic pacing, inert null instance)")
+import pathlib
+e = Env()
+sp = os.path.join(e.base, "hard", "status.json"); os.makedirs(os.path.dirname(sp))
+t = [100.0]
+p = MP.Progress(sp, clock=lambda: t[0], mono=lambda: t[0])
+p.begin("A", "copying", None)
+t[0] = 106.0; p.advance(10)
+t[0] = 109.0; p.advance(10)
+try:
+    a = json.load(open(sp))["active"]
+    check("unknown total: written, eta_s None", a["done"] == 20 and a["eta_s"] is None, a)
+except Exception as ex:
+    check("unknown total: written, eta_s None", False, ex)
+t[0] = 120.0
+try:
+    p.advance(10, file=pathlib.Path("x/y.mkv"))
+    ok, err = True, None
+except Exception as ex:
+    ok, err = False, ex
+check("Path value does not raise", ok, err)
+check("Path value stringified in file", json.load(open(sp))["active"]["file"] == "x/y.mkv")
+check("no tmp left after Path write", os.listdir(os.path.dirname(sp)) == ["status.json"], os.listdir(os.path.dirname(sp)))
+
+wd = os.path.join(e.base, "rearm")
+wmsgs = []
+w = MP.Progress(os.path.join(wd, "status.json"), log=lambda m, level="INFO": wmsgs.append((level, m)))
+w.begin("A", "copying", 10)
+check("first failure warns", len(wmsgs) == 1, wmsgs)
+os.makedirs(wd); w.idle()
+check("write succeeds once dir exists", os.path.exists(os.path.join(wd, "status.json")) and len(wmsgs) == 1, wmsgs)
+shutil.rmtree(wd); w.idle()
+check("warning re-armed after a success", len(wmsgs) == 2 and wmsgs[1][0] == "WARN", wmsgs)
+
+sp2 = os.path.join(e.base, "mono.json")
+wall, mono = [1000.0], [100.0]
+m = MP.Progress(sp2, clock=lambda: wall[0], mono=lambda: mono[0])
+m.begin("A", "copying", 1000)
+wall[0] -= 500; mono[0] = 102.5; m.advance(5)
+check("wall clock stepping back does not silence progress", m.writes == 2, m.writes)
+wall[0] -= 500; mono[0] = 105.0; m.advance(5)
+check("and keeps writing", m.writes == 3, m.writes)
+
+MP.NULL_PROGRESS.begin("X", "copying", 1)
+check("NULL_PROGRESS is never mutated", MP.NULL_PROGRESS.doc["active"] is None and MP.NULL_PROGRESS.doc["state"] == "idle", MP.NULL_PROGRESS.doc)
+
+sp3 = os.path.join(e.base, "back.json")
+t = [10.0]
+b = MP.Progress(sp3, clock=lambda: t[0], mono=lambda: t[0])
+b.begin("A", "copying", 1000)
+t[0] = 16.0; b.set_done(600)
+t[0] = 30.0; b.set_done(100)
+a = json.load(open(sp3))["active"]
+check("done moving backwards never gives a negative rate", a["rate"] is not None and a["rate"] >= 0 and (a["eta_s"] is None or a["eta_s"] >= 0), a)
+
+rows = [{"name": "Q", "state": "waiting"}]
+q = MP.Progress(os.path.join(e.base, "q.json")); q.queue(rows); rows[0]["name"] = "changed"
+check("queue stores copies", q.doc["queue"][0]["name"] == "Q", q.doc["queue"])
 
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
