@@ -1378,6 +1378,14 @@ def main(argv=None):
             marker = marker_for(cfg["upload_dir"], name)
             declared = os.path.exists(marker)
 
+            def say(msg, prev=prev):
+                # A waiting item used to log the same line every tick (about
+                # 4,100 a day). Log only when the message changes; the caller
+                # stores what was said in the entry's state as "said".
+                if msg != prev.get("said"):
+                    log(msg)
+                return msg
+
             if not now["files"] and not now["partial"]:
                 # Nothing usable (an empty folder, or only junk like
                 # .DS_Store). Processing it can only fail, and it would fail
@@ -1419,8 +1427,8 @@ def main(argv=None):
                     rows[name] = queue_row(name, now, "held: convert failed", err)
                     continue
             if now["partial"] and not declared:
-                log(f"watching {name}: transfer still in progress (partial files)")
-                state[name] = {"shape": now["shape"], "stable": 0}
+                said = say(f"watching {name}: transfer still in progress (partial files)")
+                state[name] = {"shape": now["shape"], "stable": 0, "said": said}
                 rows[name] = queue_row(name, now, "uploading", err)
                 continue
             if declared:
@@ -1430,16 +1438,16 @@ def main(argv=None):
                 # too early costs a failed run, never data.
                 log(f"{name}: upload marked complete by the sender")
             elif time.time() - now["newest"] < QUIET_SECONDS and not args.force:
-                log(f"watching {name}: written to in the last {QUIET_SECONDS}s")
-                state[name] = {"shape": now["shape"], "stable": 0}
+                said = say(f"watching {name}: written to in the last {QUIET_SECONDS}s")
+                state[name] = {"shape": now["shape"], "stable": 0, "said": said}
                 rows[name] = queue_row(name, now, "writing", err)
                 continue
 
             stable = prev.get("stable", 0) + 1 if prev.get("shape") == now["shape"] else 0
             if stable < STABLE_POLLS and not args.force and not declared:
-                log(f"watching {name}: {now['files']} files, {human(now['bytes'])} "
-                    f"(stable {stable}/{STABLE_POLLS})")
-                state[name] = {"shape": now["shape"], "stable": stable}
+                said = say(f"watching {name}: {now['files']} files, {human(now['bytes'])} "
+                           f"(stable {stable}/{STABLE_POLLS})")
+                state[name] = {"shape": now["shape"], "stable": stable, "said": said}
                 rows[name] = queue_row(name, now, f"stable {stable}/{STABLE_POLLS}", err)
                 continue
 

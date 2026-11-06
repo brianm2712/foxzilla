@@ -805,6 +805,33 @@ check("files appearing in a held empty folder get it filed",
       not os.path.exists(os.path.join(e.upload, "Empty Folder")) and videos_under(e.movies) != [],
       (videos_under(e.movies), e.tail(4)))
 
+print("\nwatching_lines_only_when_they_change  (live log: ~4,100 identical 'watching' lines a day)")
+e = Env()
+f = os.path.join(e.upload, "Busy.Show.S01E01.mkv")
+mkfile(f, 2048)
+for _ in range(3):
+    os.utime(f, None)                    # still being written to
+    e.run(force=False)
+lines = [l for l in open(e.log).read().splitlines() if "watching Busy.Show.S01E01.mkv" in l]
+check("an item still being written logs 'written to' once over 3 runs",
+      len(lines) == 1 and f"written to in the last {MP.QUIET_SECONDS}s" in lines[0], lines)
+check("and it is still waiting", os.path.exists(f))
+mkfile(os.path.join(e.upload, "Up", "a.mkv.part"), 100)
+e.run(); e.run(); e.run()
+lines = [l for l in open(e.log).read().splitlines() if "watching Up:" in l]
+check("a partial transfer logs 'in progress' once over 3 runs", len(lines) == 1, lines)
+e = Env()
+f = os.path.join(e.upload, "Quiet.Show.S01E01.mkv")
+mkfile(f, 2048)
+old = time.time() - 2 * MP.QUIET_SECONDS
+os.utime(f, (old, old))
+e.run(force=False); e.run(force=False)
+lines = [l for l in open(e.log).read().splitlines() if "watching Quiet.Show" in l]
+check("progress through stability is still logged",
+      len(lines) == 2 and "stable 0/" in lines[0] and "stable 1/" in lines[1], lines)
+e.run(force=False)
+check("and it is filed once stable", not os.path.exists(f), e.tail(3))
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]
