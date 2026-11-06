@@ -48,22 +48,33 @@ FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
 FFPROBE = os.environ.get("FFPROBE", "ffprobe")
 TITLE_PROBE_MISSES = 3      # consecutive unreadable titles that end the scan
 TITLE_PROBE_MAX = 99
+PROBE_TIMEOUT = 120         # seconds per ffprobe; a hung probe counts as a miss
 
 
 def ffmpeg_available():
     return bool(shutil.which(FFMPEG) and shutil.which(FFPROBE))
 
 
-def probe_titles(iso):
-    """[(title number, seconds)] for every readable title on the disc."""
+def probe_titles(iso, on_probe=None):
+    """
+    [(title number, seconds)] for every readable title on the disc.
+
+    on_probe is called after every ffprobe: the scan can run up to
+    TITLE_PROBE_MAX probes with nothing else reporting progress.
+    """
     found, misses, n = [], 0, 0
     while misses < TITLE_PROBE_MISSES and n < TITLE_PROBE_MAX:
         n += 1
-        p = subprocess.run([FFPROBE, "-v", "error", "-f", "dvdvideo", "-title", str(n),
-                            "-i", iso, "-show_entries", "format=duration", "-of", "csv=p=0"],
-                           capture_output=True, text=True)
         try:
-            secs = float(p.stdout.strip().split(",")[0]) if p.returncode == 0 else None
+            p = subprocess.run([FFPROBE, "-v", "error", "-f", "dvdvideo", "-title", str(n),
+                                "-i", iso, "-show_entries", "format=duration", "-of", "csv=p=0"],
+                               capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            p = None
+        if on_probe:
+            on_probe()
+        try:
+            secs = float(p.stdout.strip().split(",")[0]) if p and p.returncode == 0 else None
         except ValueError:
             secs = None
         if secs is None:
@@ -181,7 +192,11 @@ def convert_disc_image(cfg, name, log, progress=NULL_PROGRESS):
     final = os.path.join(cfg["upload_dir"], item)
     if os.path.exists(final):
         raise PickupError(f"converted item already in the inbox: {item}")
-    found = probe_titles(iso)
+    # The scan is up to TITLE_PROBE_MAX sequential ffprobes: show it as a
+    # phase and touch the card per probe, or the status reads idle (and the
+    # healthcheck goes stale) for the whole scan.
+    progress.begin(name, "probing", None, unit="files")
+    found = probe_titles(iso, on_probe=progress.touch)
     best = longest_title(found)
     if not best:
         raise PickupError("no readable DVD titles on the disc")

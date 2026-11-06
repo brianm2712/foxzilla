@@ -2,7 +2,7 @@
 <script>
 (function(){
   var $=function(i){return document.getElementById(i);},OK='#5fd38a',WARN='#f0a030',GREY='#8b989f',ACC='#4fd8f5';
-  var PH={hashing:'Hashing',copying:'Copying to NAS',verifying:'Verifying',committing:'Committing',remuxing:'Remuxing ISO'};
+  var PH={hashing:'Hashing',copying:'Copying to NAS',verifying:'Verifying',committing:'Committing',remuxing:'Remuxing ISO',probing:'Scanning disc'};
   function size(b){if(b==null)return '';var u=['B','KB','MB','GB','TB'],i=0;while(b>=1024&&i<4){b/=1024;i++;}return b.toFixed(1)+' '+u[i];}
   function dur(s){s=Math.max(0,Math.round(s));var h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return h?h+'h '+m+'m':m?m+'m '+x+'s':x+'s';}
   function when(t){return new Date(t*1000).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'});}

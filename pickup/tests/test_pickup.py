@@ -739,6 +739,39 @@ check("last is the filed mkv item", doc["last"]["name"] == "Test Disc" and doc["
 check("no iso or mkv row left in the queue", doc["queue"] == [], doc["queue"])
 check("ends idle", doc["state"] == "idle" and doc["active"] is None, doc)
 
+print("\nprogress: the title scan is a phase of its own and keeps the card fresh  (review: health went stale)")
+e = Env()
+ffstubs(e.base, {1: 100.0, 2: 50.0})
+jellyfin.jf_movie_lookup = lambda *a: None
+mkiso(os.path.join(e.upload, "PROBE_DISC.iso"), "PROBE_DISC")
+cfg = dict(MP.DEFAULTS, upload_dir=e.upload, movies_dest=e.movies, shows_dest=e.shows,
+           receipts_dir=e.receipts)
+r = Rec()
+item = MP.convert_disc_image(cfg, "PROBE_DISC.iso", lambda *a, **k: None, progress=r)
+check("probing before remuxing", [(p, u) for _, p, u in r.phases] == [("probing", "files"), ("remuxing", "seconds")],
+      r.phases)
+check("every probe touched the card", getattr(r, "touches", 0) >= 3, getattr(r, "touches", 0))
+seen = []
+MP.probe_titles("x.iso", on_probe=lambda: seen.append(1))
+check("probe_titles calls on_probe once per ffprobe", len(seen) == 2 + MP.TITLE_PROBE_MISSES, seen)
+probe = os.path.join(e.base, "bin", "ffprobe")
+with open(probe, "w") as fh:
+    fh.write("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+real_to = disc.PROBE_TIMEOUT
+disc.PROBE_TIMEOUT = 0.3
+t0 = time.monotonic()
+try:
+    found = MP.probe_titles("x.iso")
+    hung = None
+except Exception as ex:
+    found, hung = None, ex
+finally:
+    disc.PROBE_TIMEOUT = real_to
+check("a hanging ffprobe is a miss, not a crash", found == [] and hung is None, (found, hung))
+check("and the scan gives up promptly", time.monotonic() - t0 < 10, time.monotonic() - t0)
+check("each ffprobe has a 120s timeout", real_to == 120, real_to)
+disc.FFMPEG, disc.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+
 print("\nreview fixes: dry run publishes no status")
 e = Env()
 sp = os.path.join(e.base, "status.json")
