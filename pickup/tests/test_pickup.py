@@ -543,6 +543,49 @@ check("hashing phase begun for the item", r.phases == [("Pack", "hashing", "byte
 check("hashed bytes == total", r.done == r.total == m["total_bytes"], (r.done, r.total))
 check("files counted", r.files == r.files_total == 2, (r.files, r.files_total))
 
+print("\nprogress: staging and commit run to 100%")
+e = Env()
+item = os.path.join(e.upload, "Pack")
+mkfile(os.path.join(item, "a.mkv"), size=MP.CHUNK + 10); mkfile(os.path.join(item, "b.mkv"), size=300)
+m = MP.build_manifest(item, lambda *a, **k: None)
+r = Rec()
+staging = os.path.join(e.shows, ".staging", "t1")
+MP.stage(item, m, staging, lambda *a, **k: None, progress=r)
+check("stage phase is verifying on one filesystem", r.phases[-1] == ("Pack", "verifying", "bytes"), r.phases)
+check("stage reaches total bytes", r.done == r.total == m["total_bytes"], (r.done, r.total))
+check("stage counts every file", r.files == r.files_total == 2, (r.files, r.files_total))
+r2 = Rec()
+r2.begin("Pack", "committing", 2, unit="files", files_total=2)
+MP.commit(staging, os.path.join(e.shows, "Pack"), os.path.join(e.shows, ".quarantine"),
+          lambda *a, **k: None, progress=r2)
+check("commit counts every placed file", r2.files == 2, r2.files)
+
+print("\nprogress: the copy path advances each byte once")
+e = Env()
+item = os.path.join(e.upload, "Pack")
+mkfile(os.path.join(item, "a.mkv"), size=MP.CHUNK + 10); mkfile(os.path.join(item, "b.mkv"), size=300)
+m = MP.build_manifest(item, lambda *a, **k: None)
+r = Rec()
+_orig_sf, _orig_fb = MP.same_filesystem, MP.free_bytes
+MP.same_filesystem = lambda a, b: False
+MP.free_bytes = lambda p: 10 ** 12
+try:
+    MP.stage(item, m, os.path.join(e.shows, ".staging", "t2"), lambda *a, **k: None, progress=r)
+finally:
+    MP.same_filesystem, MP.free_bytes = _orig_sf, _orig_fb
+check("copy path phase is copying", r.phases[-1] == ("Pack", "copying", "bytes"), r.phases)
+check("copy path reaches total exactly", r.done == r.total == m["total_bytes"], (r.done, r.total))
+
+print("\nprogress: a whole process_item walks hashing -> stage -> committing")
+e = Env()
+mkfile(os.path.join(e.upload, "Show S01", "Show.S01E01.mkv"), size=500)
+mkfile(os.path.join(e.upload, "Show S01", "Show.S01E02.mkv"), size=500)
+r = Rec()
+cfg = dict(MP.DEFAULTS, upload_dir=e.upload, movies_dest=e.movies, shows_dest=e.shows,
+           receipts_dir=e.receipts)
+MP.process_item(cfg, "Show S01", lambda *a, **k: None, progress=r)
+check("phases in order", [p for _, p, _ in r.phases] == ["hashing", "verifying", "committing"], r.phases)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]

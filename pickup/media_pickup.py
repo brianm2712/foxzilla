@@ -476,7 +476,7 @@ def free_bytes(path):
     return st.f_bavail * st.f_frsize
 
 
-def stage(src_root, manifest, staging, log, dry_run=False):
+def stage(src_root, manifest, staging, log, dry_run=False, progress=NULL_PROGRESS):
     """
     Phase 2. Copy into staging on the destination filesystem and verify.
 
@@ -488,6 +488,10 @@ def stage(src_root, manifest, staging, log, dry_run=False):
     os.makedirs(staging, exist_ok=True)
     linking = same_filesystem(src_root, staging)
     log(f"  phase 2: staging into {staging} ({'hardlink' if linking else 'copy'})")
+    if not dry_run:
+        progress.begin(os.path.basename(src_root.rstrip("/")),
+                       "verifying" if linking else "copying",
+                       manifest["total_bytes"], files_total=len(manifest["files"]))
 
     if not linking:
         need = manifest["total_bytes"]
@@ -520,11 +524,12 @@ def stage(src_root, manifest, staging, log, dry_run=False):
                         break
                     fout.write(buf)
                     h.update(buf)
+                    progress.advance(len(buf), entry["path"])
                 fout.flush()
                 os.fsync(fout.fileno())
             got = h.hexdigest()
         else:
-            got = sha256_file(dst)
+            got = sha256_file(dst, on_chunk=lambda n, p=entry["path"]: progress.advance(n, p))
 
         if got != entry["sha256"]:
             raise PickupError(
@@ -532,6 +537,7 @@ def stage(src_root, manifest, staging, log, dry_run=False):
                 f"expected {entry['sha256'][:12]}, got {got[:12]}")
         if os.path.getsize(dst) != entry["size"]:
             raise PickupError(f"staging size mismatch for {entry['path']}")
+        progress.file_done(entry["path"])
         placed.append(entry["path"])
 
     log(f"  phase 2: verified {len(placed)}/{len(manifest['files'])} files against manifest")
@@ -646,7 +652,7 @@ def organize_movie_staging(staging, title, log, renames=None):
 # phase 3: commit
 # --------------------------------------------------------------------------
 
-def commit(staging, dest, quarantine, log, dry_run=False):
+def commit(staging, dest, quarantine, log, dry_run=False, progress=NULL_PROGRESS):
     """
     Phase 3. Move staging into place one atomic rename at a time.
 
@@ -665,11 +671,13 @@ def commit(staging, dest, quarantine, log, dry_run=False):
         os.rename(staging, dest)
         for rel, _ in walk_files(dest):
             placements[rel] = os.path.join(dest, rel)
+            progress.file_done(rel)
         log(f"  phase 3: committed as a whole -> {dest}")
         return placements, skipped, conflicts
 
     log(f"  phase 3: destination exists, merging by content -> {dest}")
     for rel, full in walk_files(staging):
+        progress.file_done(rel)
         target = os.path.join(dest, rel)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         if os.path.exists(target):
@@ -1129,12 +1137,12 @@ def write_receipt(cfg, name, payload, log):
         return None
 
 
-def process_item(cfg, name, log, dry_run=False):
+def process_item(cfg, name, log, dry_run=False, progress=NULL_PROGRESS):
     """Run the three phases for one incoming item. Raises PickupError on failure."""
     src = os.path.join(cfg["upload_dir"], name)
     started = time.time()
 
-    manifest = build_manifest(src, log)
+    manifest = build_manifest(src, log, progress)
     if not manifest["files"]:
         raise PickupError("item contains no usable files")
 
@@ -1158,7 +1166,7 @@ def process_item(cfg, name, log, dry_run=False):
     placements, skipped, conflicts = {}, [], []
     renames = {}
     try:
-        stage(src, manifest, staging, log, dry_run=dry_run)
+        stage(src, manifest, staging, log, dry_run=dry_run, progress=progress)
 
         if kind == "movie" and not dry_run:
             targets = organize_movie_staging(staging, title, log, renames)
@@ -1168,9 +1176,13 @@ def process_item(cfg, name, log, dry_run=False):
         # commit() reports paths inside each target; map them back to the
         # manifest's paths, which is what reconcile() checks against.
         back = {where: rel for rel, where in renames.items()}
+        if not dry_run:
+            progress.begin(name, "committing", len(manifest["files"]), unit="files",
+                           files_total=len(manifest["files"]))
         for target_title, staged_path in targets.items():
             dest = os.path.join(dest_root, target_title)
-            p, s, c = commit(staged_path, dest, quarantine, log, dry_run=dry_run)
+            p, s, c = commit(staged_path, dest, quarantine, log, dry_run=dry_run,
+                           progress=progress)
             orig = lambda rel: back.get((target_title, rel), rel)
             placements.update((orig(rel), target) for rel, target in p.items())
             skipped.extend(orig(rel) for rel in s)
