@@ -1,0 +1,11 @@
+# The image needs only what the Dockerfile COPYs: media_pickup.py,
+# foxzilla_pickup/ and docker-entrypoint.sh. Keep build-dir clutter out of the
+# context so it can't leak into a layer. The revision lives in an image label,
+# so VERSION is not needed either.
+**/__pycache__
+**/*.pyc
+tests/
+deploy.sh
+logrotate.conf
+.deploy-new
+VERSION
