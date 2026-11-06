@@ -665,6 +665,69 @@ check("out_time parsed in seconds, N/A skipped", seen == [1.0, 3.5], seen)
 check("output still written", os.path.getsize(out) == 30)
 MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
 
+print("\nprogress: a run writes the queue and ends idle with last")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+mkfile(os.path.join(e.upload, "Uploading", "a.mkv.part"), size=100)
+mkfile(os.path.join(e.upload, "Film (2020).mkv"), size=2000)
+e.run("--status-file", sp)
+doc = json.load(open(sp))
+check("run ends idle", doc["state"] == "idle" and doc["active"] is None, doc)
+check("last is the filed film", doc["last"]["name"] == "Film (2020).mkv" and doc["last"]["result"] == "ok", doc["last"])
+rows = {r["name"]: r for r in doc["queue"]}
+check("uploading item queued as uploading", rows.get("Uploading", {}).get("state") == "uploading", doc["queue"])
+check("queue row has size", rows["Uploading"]["bytes"] == 100 and rows["Uploading"]["files"] == 1, rows["Uploading"])
+check("filed film is not in the queue", "Film (2020).mkv" not in rows, doc["queue"])
+
+print("\nprogress: a failed item shows its error in the queue")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+real_pi = MP.process_item
+MP.process_item = lambda *a, **k: (_ for _ in ()).throw(MP.PickupError("boom"))
+try:
+    mkfile(os.path.join(e.upload, "Broken (2001).mkv"), size=100)
+    e.run("--status-file", sp)
+finally:
+    MP.process_item = real_pi
+doc = json.load(open(sp))
+rows = {r["name"]: r for r in doc["queue"]}
+check("failed row with error", rows.get("Broken (2001).mkv", {}).get("state") == "failed"
+      and rows["Broken (2001).mkv"].get("error") == "boom", doc["queue"])
+check("last records the failure", doc["last"]["result"] == "failed" and doc["last"]["error"] == "boom", doc["last"])
+
+print("\nprogress: a tick that cannot take the lock leaves the status alone")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+open(sp, "w").write('{"sentinel": true}')
+held = MP.acquire_lock(e.lock)
+check("the test really holds the lock", held is not None and MP.acquire_lock(e.lock) is None)
+mkfile(os.path.join(e.upload, "Film (2020).mkv"), size=2000)
+e.run("--status-file", sp)
+held.close()
+check("status untouched", json.load(open(sp)) == {"sentinel": True})
+check("the locked-out tick filed nothing", os.path.exists(os.path.join(e.upload, "Film (2020).mkv")))
+
+print("\nprogress: an empty inbox still writes idle")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+e.run("--status-file", sp)
+d = json.load(open(sp))
+check("idle written with empty queue", d["state"] == "idle" and d["queue"] == [])
+
+print("\nprogress: an iso converted and filed in one tick")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+ffstubs(e.base, {1: 100.0})
+MP.jf_movie_lookup = lambda *a: None
+mkiso(os.path.join(e.upload, "TEST_DISC.iso"), "TEST_DISC")
+e.run("--status-file", sp)
+MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+doc = json.load(open(sp))
+check("the mkv was filed", os.path.isdir(os.path.join(e.movies, "Test Disc")), os.listdir(e.movies))
+check("last is the filed mkv item", doc["last"]["name"] == "Test Disc" and doc["last"]["result"] == "ok", doc["last"])
+check("no iso or mkv row left in the queue", doc["queue"] == [], doc["queue"])
+check("ends idle", doc["state"] == "idle" and doc["active"] is None, doc)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]

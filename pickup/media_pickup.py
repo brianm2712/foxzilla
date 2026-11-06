@@ -1289,6 +1289,15 @@ def build_config(args):
     return cfg
 
 
+def queue_row(name, now, state, error=None):
+    """One inbox entry as the dashboard's queue shows it."""
+    row = {"name": name, "bytes": now["bytes"] if now else None,
+           "files": now["files"] if now else None, "state": state}
+    if error:
+        row["error"] = error
+    return row
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Media pickup watcher (three-phase, verified).")
     for key, val in DEFAULTS.items():
@@ -1327,10 +1336,16 @@ def main(argv=None):
         log("another run is still working - skipping this tick")
         return 0
 
+    # Only the run holding the lock may touch the status file: a skipped tick
+    # writing "idle" would clobber the live run's progress.
+    progress = Progress(cfg["status_file"], log=log)
+    rows = {}
+
     try:
         entries = [e for e in sorted(os.listdir(cfg["upload_dir"]))
                    if not e.startswith(".") and not is_junk(e)
                    and not e.endswith(NAME_SUFFIX)]
+        rows.update((n, queue_row(n, None, "waiting")) for n in entries)
         if not entries:
             # Still tidy up: a marker whose item never arrived, or was already
             # dealt with, would otherwise sit there indefinitely.
@@ -1344,6 +1359,7 @@ def main(argv=None):
             path = os.path.join(cfg["upload_dir"], name)
             now = observe(path)
             prev = state.get(name, {})
+            err = prev.get("last_error")
 
             marker = marker_for(cfg["upload_dir"], name)
             declared = os.path.exists(marker)
@@ -1361,6 +1377,7 @@ def main(argv=None):
                     log(f"holding {name}: disc image ({imgs[0]}{more}) - Jellyfin cannot play "
                         f"disc images; convert to MKV and it will be picked up ({why})", "WARN")
                 state[name] = {"shape": now["shape"], "stable": 0, "held": "disc image"}
+                rows[name] = queue_row(name, now, "held: disc image")
                 continue
             if convertible:
                 # The .name file is part of the disc's shape, so dropping one
@@ -1372,10 +1389,12 @@ def main(argv=None):
                     now["shape"][os.path.basename(nf)] = [st.st_size, st.st_mtime]
                 if prev.get("held") == "convert failed" and prev.get("shape") == now["shape"]:
                     state[name] = prev
+                    rows[name] = queue_row(name, now, "held: convert failed", err)
                     continue
             if now["partial"] and not declared:
                 log(f"watching {name}: transfer still in progress (partial files)")
                 state[name] = {"shape": now["shape"], "stable": 0}
+                rows[name] = queue_row(name, now, "uploading", err)
                 continue
             if declared:
                 # The uploader has verified this item and said so. Trusting
@@ -1386,6 +1405,7 @@ def main(argv=None):
             elif time.time() - now["newest"] < QUIET_SECONDS and not args.force:
                 log(f"watching {name}: written to in the last {QUIET_SECONDS}s")
                 state[name] = {"shape": now["shape"], "stable": 0}
+                rows[name] = queue_row(name, now, "writing", err)
                 continue
 
             stable = prev.get("stable", 0) + 1 if prev.get("shape") == now["shape"] else 0
@@ -1393,16 +1413,22 @@ def main(argv=None):
                 log(f"watching {name}: {now['files']} files, {human(now['bytes'])} "
                     f"(stable {stable}/{STABLE_POLLS})")
                 state[name] = {"shape": now["shape"], "stable": stable}
+                rows[name] = queue_row(name, now, f"stable {stable}/{STABLE_POLLS}", err)
                 continue
 
             if convertible:
                 if args.dry_run:
                     log(f"would convert {name} ({human(now['bytes'])} disc image)")
+                    rows[name] = queue_row(name, now, "waiting", err)
                     continue
                 log(f"converting {name} ({human(now['bytes'])} disc image)")
+                progress.queue(list(rows.values()))
                 try:
-                    item = convert_disc_image(cfg, name, log)
+                    item = convert_disc_image(cfg, name, log, progress=progress)
                     state.pop(name, None)
+                    progress.finish(name, "converted")
+                    rows.pop(name, None)
+                    rows[item] = queue_row(item, None, "waiting")
                     # The new item joins this tick's listing: the loop reaches
                     # it next (its marker lets it skip the stability wait, so
                     # it is filed straight away) and its marker is not swept.
@@ -1411,19 +1437,26 @@ def main(argv=None):
                     log(f"  convert FAILED, disc left in the inbox: {e}", "ERROR")
                     state[name] = {"shape": now["shape"], "stable": 0,
                                    "held": "convert failed", "last_error": str(e)}
+                    rows[name] = queue_row(name, now, "failed", str(e))
+                    progress.finish(name, "failed", str(e))
                 except Exception as e:
                     log(f"  convert FAILED unexpectedly, disc left in the inbox: "
                         f"{type(e).__name__}: {e}", "ERROR")
                     state[name] = {"shape": now["shape"], "stable": 0,
                                    "held": "convert failed", "last_error": f"{type(e).__name__}: {e}"}
+                    rows[name] = queue_row(name, now, "failed", f"{type(e).__name__}: {e}")
+                    progress.finish(name, "failed", f"{type(e).__name__}: {e}")
                 continue
 
             log(f"processing {name} ({now['files']} files, {human(now['bytes'])})")
+            progress.queue(list(rows.values()))
             try:
-                dests = process_item(cfg, name, log, dry_run=args.dry_run)
+                dests = process_item(cfg, name, log, dry_run=args.dry_run, progress=progress)
                 processed.extend(dests)
                 state.pop(name, None)
                 if not args.dry_run:
+                    progress.finish(name, "ok")
+                    rows.pop(name, None)
                     try:
                         os.remove(marker)
                     except OSError:
@@ -1432,11 +1465,15 @@ def main(argv=None):
                 log(f"  FAILED, source left intact: {e}", "ERROR")
                 state[name] = {"shape": now["shape"], "stable": 0,
                                "last_error": str(e)}
+                rows[name] = queue_row(name, now, "failed", str(e))
+                progress.finish(name, "failed", str(e))
             except Exception as e:
                 log(f"  UNEXPECTED FAILURE, source left intact: "
                     f"{type(e).__name__}: {e}", "ERROR")
                 state[name] = {"shape": now["shape"], "stable": 0,
                                "last_error": f"{type(e).__name__}: {e}"}
+                rows[name] = queue_row(name, now, "failed", f"{type(e).__name__}: {e}")
+                progress.finish(name, "failed", f"{type(e).__name__}: {e}")
 
         for name in list(state):
             if name not in entries:
@@ -1449,6 +1486,10 @@ def main(argv=None):
                       load_credentials(cfg["jellyfin_host"], log), log)
         return 0
     finally:
+        # Every run ends idle, even a crash: a stale "active" would claim a
+        # handoff is still running.
+        progress.queue(list(rows.values()))
+        progress.idle()
         lock.close()
 
 
