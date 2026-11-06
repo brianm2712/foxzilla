@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Run every test. test_sftp/test_queue/test_gui need FOXZILLA_TEST_SSH_HOST set;
-# test_ftp and test_dav_s3 are self-contained (they spin up their own servers).
-cd "$(dirname "$0")"
-for t in test_find_site test_typed_path test_ftp test_dav_s3 test_sftp test_queue test_gui; do
-    echo "===== $t ====="
-    timeout 300 python3 "$t.py" 2>&1 | tail -6
-done
+# Run the client tests. Kept for muscle memory; the real runner is
+# tests/run_all.py (per-file timeout, no `timeout` binary needed, non-zero
+# exit if anything fails). test_sftp/test_queue/test_gui skip unless
+# FOXZILLA_TEST_SSH_HOST is set.
+exec python3 "$(dirname "$0")/../../tests/run_all.py" client "$@"

@@ -1,8 +1,6 @@
 import sys, os, time, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DISPLAY", ":0")
-import tkinter as tk
-import foxzilla as F
 
 # These tests move real files over SFTP. Point them at a host you control:
 #   FOXZILLA_TEST_SSH_HOST=myhost python3 tests/test_sftp.py
@@ -10,6 +8,12 @@ SSH_HOST = os.environ.get("FOXZILLA_TEST_SSH_HOST")
 if not SSH_HOST:
     print("skipped: set FOXZILLA_TEST_SSH_HOST to a reachable SSH host")
     raise SystemExit(0)
+try:
+    import tkinter as tk
+except ImportError:
+    print("skipped: this python has no Tkinter")
+    raise SystemExit(0)
+import foxzilla as F
 
 ok = True
 def check(label, cond, extra=""):
@@ -100,3 +104,4 @@ log = app.logbox.get("1.0", "end").strip().splitlines()
 check("log populated", len(log) >= 2, log[-1] if log else "")
 app.quit()
 print("\n" + ("ALL GUI TESTS PASSED" if ok else "*** FAILURES ***"))
+sys.exit(0 if ok else 1)

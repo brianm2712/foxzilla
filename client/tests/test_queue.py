@@ -83,3 +83,4 @@ S.rmdir("/tmp/foxzilla_qtest")
 print("cleaned up:", "foxzilla_qtest" not in [e.name for e in S.listdir("/tmp")])
 S.close()
 print("ALL QUEUE TESTS PASSED")
+sys.exit(0)   # any failure above raised, which exits 1

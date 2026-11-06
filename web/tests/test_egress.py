@@ -10,6 +10,17 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import egress
 
+# A public name for the "allowed" cases, answered here rather than by real DNS
+# so the suite passes offline and inside sandboxes. The guard only sees the
+# getaddrinfo answer either way, which is the thing under test.
+PUBLIC = "public.example.test"
+_real_gai = socket.getaddrinfo
+def _offline_gai(host, port, *a, **k):
+    if host == PUBLIC:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", port))]
+    return _real_gai(host, port, *a, **k)
+socket.getaddrinfo = _offline_gai
+
 ok = True
 
 
@@ -64,14 +75,14 @@ for addr in ["1.1.1.1", "8.8.8.8", "93.184.216.34", "2606:4700:4700::1111"]:
 
 print("\nports")
 try:
-    egress.resolve("one.one.one.one", 22)
+    egress.resolve(PUBLIC, 22)
     check("allows a file-transfer port (22)", True)
 except egress.Refused as e:
     check("allows a file-transfer port (22)", False, str(e))
 for port, why in [(25, "SMTP"), (3306, "MySQL"), (6379, "Redis"),
                   (11211, "memcached"), (8096, "Jellyfin"), (8091, "the SIEM")]:
     try:
-        egress.resolve("one.one.one.one", port)
+        egress.resolve(PUBLIC, port)
         check(f"refuses port {port} ({why})", False, "was allowed")
     except egress.Refused:
         check(f"refuses port {port} ({why})", True)
@@ -84,7 +95,7 @@ except egress.Refused as e:
     check("refuses a name that resolves to loopback", True, str(e)[:50])
 
 # A name is only as safe as every address it returns.
-real = socket.getaddrinfo
+real = socket.getaddrinfo        # the offline stub, chained
 def mixed(host, port, *a, **k):
     if host == "sneaky.test":
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
@@ -100,7 +111,7 @@ socket.getaddrinfo = real
 
 print("\nthe caller is handed an address, not a name (defeats rebinding)")
 try:
-    target = egress.safe_target("one.one.one.one", 443)
+    target = egress.safe_target(PUBLIC, 443)
     egress.check_address(target)           # must itself be a valid public IP
     check("safe_target returns a checked address", True, target)
 except Exception as e:
