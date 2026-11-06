@@ -1,0 +1,14 @@
+<section id="pickup" aria-label="Media pickup" style="margin-top: 20px; background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: baseline">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">07b · Media pickup → NAS</div>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 14px">
+<span id="pDot" style="width: 12px; height: 12px; border-radius: 999px; background: #8b989f"></span>
+<span id="pHead" style="font-family: 'Space Grotesk', sans-serif; font-size: 24px; font-weight: 500">No data</span>
+<span id="pWhen" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8b989f">pickup/status.json not loaded</span>
+<span id="pStale" hidden style="border: 1px solid #f0a030; color: #f0a030; padding: 2px 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase">stale — pickup not reporting</span>
+</div>
+<div id="pBarWrap" hidden role="progressbar" aria-label="Pickup progress" aria-valuemin="0" aria-valuemax="100" style="height: 10px; background: rgba(232,236,239,0.10)"><div id="pBar" style="height: 100%; width: 0; background: #4fd8f5; transition: width .6s"></div></div>
+<div id="pMeta" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8b989f"></div>
+<ul id="pQueue" style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #8b989f"></ul>
+</section>

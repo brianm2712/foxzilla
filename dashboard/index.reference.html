@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fenris · home</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%2024%2024%27%3E%3Crect%20width%3D%2724%27%20height%3D%2724%27%20fill%3D%27%230b0d0f%27/%3E%3Cpath%20d%3D%27M3.5%202.5L9%208h6l5.5-5.5V11l-3%204.5L12%2021l-5.5-5.5-3-4.5z%27%20fill%3D%27none%27%20stroke%3D%27%234fd8f5%27%20stroke-width%3D%272%27%20stroke-linejoin%3D%27round%27/%3E%3Cpath%20d%3D%27M7.6%2011.6l2.8%201.5M16.4%2011.6l-2.8%201.5%27%20stroke%3D%27%23f0a030%27%20stroke-width%3D%272.6%27%20stroke-linecap%3D%27round%27/%3E%3C/svg%3E">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;600&amp;family=IBM+Plex+Sans:wght@400;500&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0b0d0f}
+a{color:#4fd8f5}a:hover{color:#e8ecef}
+.tile{transition:border-color .15s ease, background .15s ease}
+.tile:hover{border-color:#4fd8f5 !important;background:#1a2a32 !important}
+.tile:focus-visible{outline:2px solid #4fd8f5;outline-offset:2px}
+</style>
+
+</head>
+<body>
+<div id="app"></div>
+<template id="tpl">
+
+<div style="min-height: 100vh; background-color: #0b0d0f; background-image: linear-gradient(rgba(232,236,239,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(232,236,239,0.035) 1px, transparent 1px); background-size: 40px 40px; color: #e8ecef; font-family: 'IBM Plex Sans', -apple-system, system-ui, sans-serif; font-size: 16px; line-height: 1.6">
+
+<header style="height: 58px; border-bottom: 1px solid rgba(232,236,239,0.16); background: #0b0d0f">
+<div style="max-width: 1280px; margin: 0 auto; height: 100%; padding: 0 24px; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: 16px">
+<div style="display: flex; align-items: center; gap: 12px">
+<div style="width: 34px; height: 34px; border: 1px solid #4fd8f5; display: flex; align-items: center; justify-content: center; color: #4fd8f5">
+<svg viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Fenris" style="fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round"><path d="M3.5 2.5L9 8h6l5.5-5.5V11l-3 4.5L12 21l-5.5-5.5-3-4.5z"></path><path d="M7.6 11.6l2.8 1.5M16.4 11.6l-2.8 1.5" style="stroke: #f0a030; stroke-width: 2.2"></path></svg>
+</div>
+<div style="font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 18px; letter-spacing: 3px; text-transform: uppercase">Fenris</div>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; text-transform: uppercase; color: #8b989f">
+<span id="headDot" style="width: 8px; height: 8px; border-radius: 999px; background: {{headDot}}; box-shadow: 0 0 8px {{headDot}}"></span>
+<span id="headStatus">{{headStatus}}</span>
+</div>
+</div>
+</header>
+
+<main style="max-width: 1280px; margin: 0 auto; padding: 48px 24px 64px; box-sizing: border-box">
+
+<section style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px">
+<div style="flex: 1 1 520px; min-width: 0">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 2.64px; color: #f0a030; text-transform: uppercase">// home services · tailnet only</div>
+<p style="margin: 12px 0 0; color: #8b989f; max-width: 720px">HTTPS via a Let’s Encrypt wildcard on <code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: #e8ecef">*.home.prosej.com</code>, routed by the reverse proxy on <code style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: #e8ecef">100.102.227.73</code>. Not reachable from the LAN. Names served by Pi-hole.</p>
+</div>
+<sc-if value="{{isSample}}" hint-placeholder-val="{{ false }}">
+<div style="border: 1px solid #f0a030; padding: 8px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #f0a030; text-transform: uppercase">Sample status data · not live</div>
+</sc-if>
+</section>
+
+<section aria-label="Overview" style="margin-top: 40px; display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 20px">
+
+<div style="background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px; display: flex; flex-direction: column; gap: 16px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">01 · Service mix</div>
+<div style="display: flex; align-items: center; gap: 20px">
+<div style="position: relative; width: 128px; height: 128px; flex: none">
+<svg viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="18 services by category: 7 sites, 4 infrastructure, 4 tools, 2 operations, 1 media">
+<g transform="rotate(-90 64 64)">
+<circle cx="64" cy="64" r="52" style="fill: none; stroke: #1a2a32; stroke-width: 14"></circle>
+<sc-for list="{{donut}}" as="seg" hint-placeholder-count="5">
+<circle cx="64" cy="64" r="52" style="fill: none; stroke: {{seg.color}}; stroke-width: 14; stroke-dasharray: {{seg.dash}}; stroke-dashoffset: {{seg.off}}"></circle>
+</sc-for>
+</g>
+</svg>
+<div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center">
+<div style="font-family: 'Space Grotesk', sans-serif; font-size: 34px; font-weight: 500; line-height: 1">{{total}}</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.6px; color: #8b989f; text-transform: uppercase; margin-top: 4px">services</div>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #8b989f; min-width: 0">
+<sc-for list="{{donut}}" as="seg" hint-placeholder-count="5">
+<div style="display: flex; align-items: center; gap: 8px"><span style="width: 10px; height: 10px; background: {{seg.color}}; flex: none"></span><span style="flex: 1">{{seg.label}}</span><span style="font-family: 'JetBrains Mono', monospace; color: #e8ecef">{{seg.n}}</span></div>
+</sc-for>
+</div>
+</div>
+</div>
+
+<div style="background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px; display: flex; flex-direction: column; gap: 16px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">02 · Wildcard cert</div>
+<div style="display: flex; align-items: center; gap: 20px">
+<div style="position: relative; width: 128px; height: 128px; flex: none">
+<svg viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Days until the next certificate renewal">
+<g transform="rotate(-90 64 64)">
+<circle cx="64" cy="64" r="52" style="fill: none; stroke: #1a2a32; stroke-width: 8"></circle>
+<circle cx="64" cy="64" r="52" style="fill: none; stroke: {{certColor}}; stroke-width: 8; stroke-dasharray: {{certDash}}"></circle>
+</g>
+</svg>
+<div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center">
+<div style="font-family: 'Space Grotesk', sans-serif; font-size: 34px; font-weight: 500; line-height: 1">{{certDays}}</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.6px; color: #8b989f; text-transform: uppercase; margin-top: 4px">days</div>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #8b989f">
+<div><span style="color: #e8ecef">Next renewal</span><br>12 Nov 2026</div>
+<div><span style="color: #e8ecef">Mechanism</span><br>/opt/acme/renew.sh, daily cron</div>
+</div>
+</div>
+</div>
+
+<div style="background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px; display: flex; flex-direction: column; gap: 16px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">03 · Ingress path</div>
+<div style="display: flex; height: 14px; gap: 2px" role="img" aria-label="13 proxied over TLS, 3 public domains, 2 direct LAN">
+<div style="width: 72.2%; background: #4fd8f5"></div>
+<div style="width: 16.7%; background: #e8ecef"></div>
+<div style="width: 11.1%; background: #f0a030"></div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #8b989f">
+<div style="display: flex; align-items: center; gap: 8px"><span style="width: 10px; height: 10px; background: #4fd8f5"></span><span style="flex: 1">Proxied · TLS wildcard</span><span style="font-family: 'JetBrains Mono', monospace; color: #e8ecef">13</span></div>
+<div style="display: flex; align-items: center; gap: 8px"><span style="width: 10px; height: 10px; background: #e8ecef"></span><span style="flex: 1">Public · own domain</span><span style="font-family: 'JetBrains Mono', monospace; color: #e8ecef">3</span></div>
+<div style="display: flex; align-items: center; gap: 8px"><span style="width: 10px; height: 10px; background: #f0a030"></span><span style="flex: 1">Direct · bypasses proxy</span><span style="font-family: 'JetBrains Mono', monospace; color: #e8ecef">2</span></div>
+</div>
+<div style="font-size: 12px; color: #8b989f; border-top: 1px solid rgba(232,236,239,0.16); padding-top: 10px">Direct: Pi-hole, Proxmox · Public: Jellyfin, dragonjiujitsu.com, theapostlesreliquary.com</div>
+</div>
+
+<div style="background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px; display: flex; flex-direction: column; gap: 16px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">04 · Reachable</div>
+<div style="display: flex; align-items: baseline; gap: 10px">
+<div style="font-family: 'Space Grotesk', sans-serif; font-size: 34px; font-weight: 500; line-height: 1" id="upCount">{{upCount}}</div>
+<div id="upLabel" style="font-size: 13px; color: #8b989f">{{upLabel}}</div>
+</div>
+<div style="display: grid; grid-template-columns: repeat(18, minmax(0, 1fr)); gap: 3px" role="img" aria-label="One cell per service, coloured by current state">
+<sc-for list="{{flat}}" as="f" hint-placeholder-count="18">
+<div class="cell" style="height: 28px; background: {{f.fill}}; border: 1px solid {{f.edge}}"></div>
+</sc-for>
+</div>
+<div style="font-size: 12px; color: #8b989f; border-top: 1px solid rgba(232,236,239,0.16); padding-top: 10px">Probed from the Proxmox host every 15 min · any HTTP answer below 500 counts as up</div>
+</div>
+
+</section>
+
+<section id="health" aria-label="Host health" style="margin-top: 20px; background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: baseline">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">05 · Host health</div>
+<a href="health/" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; text-transform: uppercase; text-decoration: none">Detail →</a>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 14px">
+<span id="hDot" style="width: 12px; height: 12px; border-radius: 999px; background: #8b989f"></span>
+<span id="hHead" style="font-family: 'Space Grotesk', sans-serif; font-size: 24px; font-weight: 500">No data</span>
+<span id="hWhen" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8b989f">health/status.json not loaded</span>
+<span id="hStale" hidden style="border: 1px solid #f0a030; color: #f0a030; padding: 2px 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase">stale</span>
+</div>
+<div>
+<div id="hHist" role="img" aria-label="Last 48 hours of health runs, oldest left" style="display: grid; grid-template-columns: repeat(192, minmax(0, 1fr)); gap: 1px; height: 22px"></div>
+<div style="display: flex; justify-content: space-between; margin-top: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #8b989f; letter-spacing: 1px"><span>48 H AGO</span><span>NOW</span></div>
+</div>
+<div id="hChips" style="display: flex; flex-wrap: wrap; gap: 8px"></div>
+<ul id="hProbs" style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #ff8a7d"></ul>
+</section>
+
+<section id="waf" aria-label="WAF" style="margin-top: 20px; background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: baseline">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">06 · WAF</div>
+<a href="waf/" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; text-transform: uppercase; text-decoration: none">Detail →</a>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 14px">
+<span id="wDot" style="width: 12px; height: 12px; border-radius: 999px; background: #8b989f"></span>
+<span id="wHead" style="font-family: 'Space Grotesk', sans-serif; font-size: 24px; font-weight: 500">No data</span>
+<span id="wWhen" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8b989f">waf/api/status.json not loaded</span>
+<span id="wStale" hidden style="border: 1px solid #f0a030; color: #f0a030; padding: 2px 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase">stale</span>
+</div>
+<div>
+<div id="wHist" role="img" aria-label="Events per hour, last 48 hours, oldest left" style="display: grid; grid-template-columns: repeat(48, minmax(0, 1fr)); gap: 2px; height: 22px; align-items: end"></div>
+<div style="display: flex; justify-content: space-between; margin-top: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #8b989f; letter-spacing: 1px"><span>48 H AGO</span><span>NOW</span></div>
+</div>
+<div id="wChips" style="display: flex; flex-wrap: wrap; gap: 8px"></div>
+</section>
+
+
+<section id="media" aria-label="Media library" style="margin-top: 20px; background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: baseline">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">07 · Media library</div>
+<a href="media/" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; text-transform: uppercase; text-decoration: none">Detail →</a>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 14px">
+<span id="mDot" style="width: 12px; height: 12px; border-radius: 999px; background: #8b989f"></span>
+<span id="mHead" style="font-family: 'Space Grotesk', sans-serif; font-size: 24px; font-weight: 500">No data</span>
+<span id="mWhen" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8b989f">media/api/status.json not loaded</span>
+</div>
+<div id="mChips" style="display: flex; flex-wrap: wrap; gap: 8px"></div>
+
+</section>
+
+<section id="pickup" aria-label="Media pickup" style="margin-top: 20px; background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: baseline">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">07b · Media pickup → NAS</div>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 14px">
+<span id="pDot" style="width: 12px; height: 12px; border-radius: 999px; background: #8b989f"></span>
+<span id="pHead" style="font-family: 'Space Grotesk', sans-serif; font-size: 24px; font-weight: 500">No data</span>
+<span id="pWhen" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8b989f">pickup/status.json not loaded</span>
+<span id="pStale" hidden style="border: 1px solid #f0a030; color: #f0a030; padding: 2px 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase">stale — pickup not reporting</span>
+</div>
+<div id="pBarWrap" hidden role="progressbar" aria-label="Pickup progress" aria-valuemin="0" aria-valuemax="100" style="height: 10px; background: rgba(232,236,239,0.10)"><div id="pBar" style="height: 100%; width: 0; background: #4fd8f5; transition: width .6s"></div></div>
+<div id="pMeta" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8b989f"></div>
+<ul id="pQueue" style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #8b989f"></ul>
+</section>
+
+<section id="siem" aria-label="AI-SIEM" style="margin-top: 20px; background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: baseline">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">08 · AI-SIEM triage</div>
+<a href="siem/" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; text-transform: uppercase; text-decoration: none">Detail →</a>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 14px">
+<span id="sDot" style="width: 12px; height: 12px; border-radius: 999px; background: #8b989f"></span>
+<span id="sHead" style="font-family: 'Space Grotesk', sans-serif; font-size: 24px; font-weight: 500">No data</span>
+<span id="sWhen" style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8b989f">siem/api/status.json not loaded</span>
+</div>
+<div>
+<div id="sHist" role="img" aria-label="Alerts per hour, last 48 hours, oldest left" style="display: grid; grid-template-columns: repeat(48, minmax(0, 1fr)); gap: 2px; height: 22px; align-items: end"></div>
+<div style="display: flex; justify-content: space-between; margin-top: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #8b989f; letter-spacing: 1px"><span>48 H AGO</span><span>NOW</span></div>
+</div>
+<div id="sChips" style="display: flex; flex-wrap: wrap; gap: 8px"></div>
+</section>
+<section aria-label="Network path" style="margin-top: 20px; background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 24px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: baseline">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">08 · How a request gets in</div>
+<div style="font-size: 13px; color: #8b989f">Old *.home.arpa links 301 to the HTTPS name</div>
+</div>
+<div style="margin-top: 24px; display: flex; flex-wrap: wrap; align-items: stretch; gap: 0">
+
+<div style="flex: 1 1 180px; min-width: 160px; border: 1px solid rgba(232,236,239,0.16); background: #1a2a32; padding: 16px; display: flex; flex-direction: column; gap: 6px">
+<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="fill: none; stroke: #e8ecef; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round"><path d="M7 3h10v18H7zM11 18h2"></path></svg>
+<div style="font-family: 'Space Grotesk', sans-serif; font-weight: 500">Tailnet device</div>
+<div style="font-size: 13px; color: #8b989f">Phone, Talos, BARABUS</div>
+</div>
+
+<div style="flex: 0 1 72px; min-width: 40px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #4fd8f5; letter-spacing: 1px">WG</div>
+<div style="width: 100%; height: 2px; background: #4fd8f5"></div>
+</div>
+
+<div style="flex: 1 1 180px; min-width: 160px; border: 1px solid #4fd8f5; background: #1a2a32; padding: 16px; display: flex; flex-direction: column; gap: 6px">
+<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="fill: none; stroke: #4fd8f5; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round"><path d="M6 11h12v9H6zM9 11V8a3 3 0 016 0v3"></path></svg>
+<div style="font-family: 'Space Grotesk', sans-serif; font-weight: 500">revproxy · nginx</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8b989f">100.102.227.73</div>
+<div style="font-size: 13px; color: #8b989f">TLS terminates here</div>
+</div>
+
+<div style="flex: 0 1 72px; min-width: 40px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px">
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #4fd8f5; letter-spacing: 1px">HTTP</div>
+<div style="width: 100%; height: 2px; background: #4fd8f5"></div>
+</div>
+
+<div style="flex: 1 1 180px; min-width: 160px; border: 1px solid rgba(232,236,239,0.16); background: #1a2a32; padding: 16px; display: flex; flex-direction: column; gap: 6px">
+<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" style="fill: none; stroke: #e8ecef; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round"><path d="M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01"></path></svg>
+<div style="font-family: 'Space Grotesk', sans-serif; font-weight: 500">Service containers</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8b989f">Proxmox · 192.168.68.54</div>
+<div style="font-size: 13px; color: #8b989f">Routes in conf.d/proxy-tls.conf</div>
+</div>
+
+</div>
+<div style="margin-top: 16px; display: flex; flex-wrap: wrap; gap: 20px">
+<div style="flex: 1 1 280px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: #8b989f">
+<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="fill: none; stroke: #4fd8f5; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"></path></svg>
+<span><span style="color: #e8ecef">DNS</span> · Pi-hole at 192.168.71.53 resolves every name</span>
+</div>
+<div style="flex: 1 1 280px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: #8b989f">
+<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" style="fill: none; stroke: #e74c3c; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round"><path d="M12 3a9 9 0 100 18 9 9 0 000-18zM5.6 5.6l12.8 12.8"></path></svg>
+<span><span style="color: #e8ecef">Blocked</span> · plain LAN, and the security lab (DVWA, Juice Shop, Kali) stays on loopback</span>
+</div>
+</div>
+</section>
+
+<sc-for list="{{sections}}" as="sec" hint-placeholder-count="5">
+<section style="margin-top: 56px">
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 16px; border-bottom: 1px solid rgba(232,236,239,0.16); padding-bottom: 12px">
+<div style="display: flex; align-items: baseline; gap: 14px">
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5">{{sec.num}}</span>
+<h2 style="margin: 0; font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 22px">{{sec.title}}</h2>
+</div>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #8b989f; text-transform: uppercase">{{sec.count}}</span>
+</div>
+<div style="margin-top: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 20px">
+<sc-for list="{{sec.items}}" as="svc" hint-placeholder-count="4">
+<a class="tile" href="{{svc.href}}" style="display: flex; flex-direction: column; gap: 14px; background: #12252c; border: 1px solid rgba(232,236,239,0.16); padding: 20px; color: #e8ecef; text-decoration: none; min-height: 150px; box-sizing: border-box">
+<div style="display: flex; align-items: flex-start; gap: 14px">
+<div style="width: 40px; height: 40px; flex: none; border: 1px solid rgba(232,236,239,0.16); background: #1a2a32; display: flex; align-items: center; justify-content: center; color: #4fd8f5">
+<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style="fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round"><path data-d="{{svc.icon}}"></path></svg>
+</div>
+<div style="flex: 1; min-width: 0">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 8px">
+<span style="font-family: 'Space Grotesk', sans-serif; font-weight: 500; font-size: 17px">{{svc.name}}</span>
+<span style="display: flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.2px; color: #8b989f; text-transform: uppercase"><span class="st" style="width: 8px; height: 8px; border-radius: 999px; background: {{svc.dot}}; border: 1px solid {{svc.dotEdge}}; box-sizing: border-box"></span>{{svc.state}}</span>
+</div>
+<div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #4fd8f5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{svc.host}}</div>
+</div>
+</div>
+<div style="font-size: 14px; line-height: 1.5; color: #8b989f; flex: 1">{{svc.desc}}</div>
+<sc-if value="{{showBeat}}" hint-placeholder-val="{{ true }}">
+<div class="beats" style="display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px" aria-hidden="true">
+<sc-for list="{{svc.beats}}" as="b" hint-placeholder-count="24">
+<div style="height: 14px; background: {{b.c}}"></div>
+</sc-for>
+</div>
+</sc-if>
+</a>
+</sc-for>
+</div>
+</section>
+</sc-for>
+
+<section aria-label="Operator notes" style="margin-top: 56px; background: #12252c; border: 1px solid rgba(232,236,239,0.16)">
+<div style="padding: 14px 20px; border-bottom: 1px solid rgba(232,236,239,0.16); font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 1.98px; color: #4fd8f5; text-transform: uppercase">Operator notes</div>
+<div style="padding: 20px; background: #1a2a32; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.9; color: #8b989f; overflow-x: auto">
+<div style="white-space: nowrap"><span style="color: #f0a030">#</span> routes live in <span style="color: #e8ecef">/opt/revproxy/conf.d/proxy-tls.conf</span></div>
+<div style="white-space: nowrap"><span style="color: #f0a030">$</span> <span style="color: #e8ecef">docker exec revproxy nginx -s reload</span></div>
+<div style="white-space: nowrap"><span style="color: #f0a030">#</span> cert renews via <span style="color: #e8ecef">/opt/acme/renew.sh</span> (daily cron)</div>
+<div style="white-space: nowrap"><span style="color: #f0a030">#</span> Jellyfin is public at jellyfin.prosej.com, not via the tailnet proxy</div>
+</div>
+</section>
+
+</main>
+</div>
+</template>
+
+<script>
+class DCLogic{constructor(p){this.props=p||{};}}
+
+class Component extends DCLogic {
+  renderVals() {
+    var mode = this.props.statusPreview ?? 'unwired';
+    var sample = mode === 'sample';
+    var showBeat = this.props.showHeartbeat ?? true;
+    var OK = '#2ecc71', WARN = '#f0a030', CRIT = '#e74c3c', NONE = 'rgba(232,236,239,0.10)';
+    var I = {
+      shield: 'M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z',
+      server: 'M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01',
+      pulse: 'M3 12h4l3-7 4 14 3-7h4',
+      term: 'M4 5h16v14H4zM8 10l3 2-3 2M13 15h4',
+      ticket: 'M4 7h16v3a2 2 0 000 4v3H4v-3a2 2 0 000-4zM14 7v10',
+      book: 'M5 4h10a4 4 0 014 4v12H9a4 4 0 01-4-4zM5 16a4 4 0 014-4h10',
+      branch: 'M6 4v12M6 16a2 2 0 100 4 2 2 0 000-4zM18 8a2 2 0 100-4 2 2 0 000 4zM18 8c0 5-12 4-12 8',
+      lock: 'M6 11h12v9H6zM9 11V8a3 3 0 016 0v3',
+      flow: 'M4 6h5v5H4zM15 13h5v5h-5zM9 8.5h3a2 2 0 012 2v3a2 2 0 002 2',
+      chat: 'M4 5h16v11H9l-5 4z',
+      play: 'M5 4h14v16H5zM10 9l5 3-5 3z',
+      globe: 'M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18',
+      pen: 'M4 20l4-1 11-11-3-3L5 16z',
+      user: 'M12 4a4 4 0 100 8 4 4 0 000-8zM4 20c1-4 4.5-6 8-6s7 2 8 6',
+      chart: 'M4 20V4M4 20h16M8 16v-4M12 16V8M16 16v-6',
+      gift: 'M4 10h16v10H4zM3 7h18v3H3zM12 7v13M12 7c-2-4-6-3-5 0M12 7c2-4 6-3 5 0'
+    };
+    var raw = [
+      { title: 'Infrastructure', items: [
+        ['WAF', 'dash.home.prosej.com/waf/', 'waf/', 'Origin WAF (ModSecurity + OWASP CRS) in front of the public sites: events, bans, exclusions, mode', I.shield],
+        ['AI-SIEM', 'dash.home.prosej.com/siem/', 'siem/', 'Alert triage: CrowdSec, canary, threat-intel and perimeter events, local-LLM verdict, incidents', I.pulse],
+        ['Pi-hole', '192.168.71.53/admin', 'http://192.168.71.53/admin', 'DNS filtering and internal name resolution', I.shield],
+        ['Proxmox', '192.168.68.54:8006', 'https://192.168.68.54:8006', 'Hypervisor for containers and VMs', I.server],
+        ['Uptime Kuma', 'uptime.home.prosej.com', 'https://uptime.home.prosej.com', 'Service monitoring and alerting', I.pulse],
+        ['Dozzle', 'logs.home.prosej.com', 'https://logs.home.prosej.com', 'Live Docker container logs', I.term]
+      ]},
+      { title: 'Operations', items: [
+        ['Tickets', 'tickets.home.prosej.com', 'https://tickets.home.prosej.com', 'Plane: incidents, problems, changes (INC/PRB/CHG)', I.ticket],
+        ['Docs', 'docs.home.prosej.com', 'https://docs.home.prosej.com', 'BookStack: runbooks, wiki, documentation', I.book]
+      ]},
+      { title: 'Tools', items: [
+        ['Gitea', 'gitea.home.prosej.com', 'https://gitea.home.prosej.com', 'Git hosting and mirrors', I.branch],
+        ['Vaultwarden', 'vault.home.prosej.com', 'https://vault.home.prosej.com', 'Password vault, served over HTTPS so the web vault unlocks', I.lock],
+        ['n8n', 'n8n.home.prosej.com', 'https://n8n.home.prosej.com', 'Workflow automation', I.flow],
+        ['Open WebUI', 'ai.home.prosej.com', 'https://ai.home.prosej.com', 'Local LLM chat, backed by Ollama', I.chat]
+      ]},
+      { title: 'Media', items: [
+        ['Jellyfin', 'jellyfin.prosej.com', 'https://jellyfin.prosej.com', 'Media library, public on prosej.com, not via the tailnet proxy', I.play]
+      ]},
+      { title: 'Sites & projects', items: [
+        ['Dragon Jiu Jitsu', 'dragonjiujitsu.com', 'https://dragonjiujitsu.com', 'Club site, public', I.globe],
+        ['Dragon Jiu Jitsu demo', 'dj.home.prosej.com', 'https://dj.home.prosej.com', 'Demo copy of the club site', I.globe],
+        ['Apostle\'s Reliquary', 'theapostlesreliquary.com', 'https://theapostlesreliquary.com', 'Miniature portfolio, public', I.globe],
+        ['Reliquary test', 'reliquary.home.prosej.com', 'https://reliquary.home.prosej.com', 'Test address, same container and DB as live', I.globe],
+        ['CV', 'cv.home.prosej.com', 'https://cv.home.prosej.com', 'Public CV site', I.user],
+        ['Finance Tracker', 'finance.home.prosej.com', 'https://finance.home.prosej.com', 'Personal finance app', I.chart],
+        ['Christmas', 'christmas.home.prosej.com', 'https://christmas.home.prosej.com', 'Seasonal site', I.gift]
+      ]}
+    ];
+    var idx = 0, up = 0, flat = [];
+    var sections = raw.map(function (s, si) {
+      var items = s.items.map(function (r) {
+        idx++;
+        var st = 'none';
+        if (sample) { st = idx === 9 ? 'warn' : 'ok'; }
+        var beats = [];
+        for (var k = 0; k < 24; k++) {
+          var c = NONE;
+          if (sample) { c = (st === 'warn' && k > 19) ? WARN : ((idx * 7 + k) % 23 === 0 ? WARN : OK); }
+          beats.push({ c: c });
+        }
+        if (st === 'ok') up++;
+        var dot = st === 'ok' ? OK : st === 'warn' ? WARN : st === 'crit' ? CRIT : 'transparent';
+        flat.push({ fill: st === 'none' ? 'transparent' : dot, edge: st === 'none' ? 'rgba(232,236,239,0.25)' : dot });
+        return { name: r[0], host: r[1], href: r[2], desc: r[3], icon: r[4], dot: dot, dotEdge: st === 'none' ? '#8b989f' : dot, state: st === 'none' ? 'no data' : st === 'ok' ? 'up' : st, beats: beats };
+      });
+      return { num: String(si + 8).padStart(2, '0'), title: s.title, count: items.length + (items.length === 1 ? ' service' : ' services'), items: items };
+    });
+    var C = 2 * Math.PI * 52;
+    var segs = [['Sites & projects', 7, '#4fd8f5'], ['Infrastructure', 4, '#2a9bb5'], ['Tools', 4, '#e8ecef'], ['Operations', 2, '#8b989f'], ['Media', 1, '#f0a030']];
+    var acc = 0, total = 18;
+    var donut = segs.map(function (g) {
+      var len = C * g[1] / total;
+      var o = { label: g[0], n: g[1], color: g[2], dash: (len - 2).toFixed(2) + ' ' + (C - len + 2).toFixed(2), off: (-acc).toFixed(2) };
+      acc += len;
+      return o;
+    });
+    var days = Math.max(0, Math.ceil((Date.UTC(2026, 10, 12) - Date.now()) / 86400000));
+    var frac = Math.min(days, 60) / 60;
+    var certColor = days <= 7 ? CRIT : days <= 14 ? WARN : '#4fd8f5';
+    return {
+      sections: sections, flat: flat, donut: donut, total: total, showBeat: showBeat, isSample: sample,
+      certDays: days, certColor: certColor, certDash: (C * frac).toFixed(2) + ' ' + C.toFixed(2),
+      upCount: sample ? up + '/18' : '—',
+      upLabel: sample ? 'up · 1 degraded' : 'awaiting Uptime Kuma feed',
+      headStatus: sample ? 'Sample · 18 up' : 'Status unwired',
+      headDot: sample ? OK : '#8b989f'
+    };
+  }
+}
+
+(function(){
+  var vals=new Component({}).renderVals();
+  function get(scope,path){path=path.trim();if(path==='true')return true;if(path==='false')return false;
+    return path.split('.').reduce(function(o,k){return o==null?undefined:o[k];},scope);}
+  function interp(s,scope){return s.replace(/\{\{([^}]*)\}\}/g,function(_,p){var v=get(scope,p);return v==null?'':String(v);});}
+  function walk(node,scope){
+    var kids=Array.prototype.slice.call(node.childNodes);
+    kids.forEach(function(n){
+      if(n.nodeType===3){if(n.nodeValue.indexOf('{{')>=0)n.nodeValue=interp(n.nodeValue,scope);return;}
+      if(n.nodeType!==1)return;
+      var tag=n.tagName.toLowerCase();
+      if(tag==='sc-for'){
+        var list=get(scope,n.getAttribute('list').replace(/[{}]/g,''))||[];var as=n.getAttribute('as');
+        var frag=document.createDocumentFragment();
+        list.forEach(function(item,i){var s=Object.create(scope);s[as]=item;s.$index=i;
+          var wrap=n.parentNode.namespaceURI==='http://www.w3.org/2000/svg'?document.createElementNS('http://www.w3.org/2000/svg','g'):document.createElement('div');wrap.innerHTML=n.innerHTML;walk(wrap,s);
+          while(wrap.firstChild)frag.appendChild(wrap.firstChild);});
+        n.parentNode.replaceChild(frag,n);return;}
+      if(tag==='sc-if'){
+        var ok=get(scope,n.getAttribute('value').replace(/[{}]/g,''));
+        if(!ok){n.remove();return;}
+        walk(n,scope);while(n.firstChild)n.parentNode.insertBefore(n.firstChild,n);n.remove();return;}
+      Array.prototype.slice.call(n.attributes).forEach(function(a){if(a.value.indexOf('{{')>=0)a.value=interp(a.value,scope);});
+      walk(n,scope);
+    });
+  }
+  var root=document.getElementById('app');
+  root.innerHTML=document.getElementById('tpl').innerHTML;walk(root,vals);root.querySelectorAll('path[data-d]').forEach(function(e){e.setAttribute('d',e.getAttribute('data-d'));e.removeAttribute('data-d');});
+})();
+</script>
+
+<script>
+(function(){
+  var OK='#2ecc71',WARN='#f0a030',CRIT='#e74c3c',NONE='rgba(232,236,239,0.10)',GREY='#8b989f';
+  var norm=function(u){return String(u).replace(/\/+$/,'');};
+  var tiles=[].slice.call(document.querySelectorAll('a.tile'));
+  var cells=[].slice.call(document.querySelectorAll('.cell'));
+  var $=function(id){return document.getElementById(id);};
+  function chip(t){var c=document.createElement('span');c.textContent=t;
+    c.style.cssText="border:1px solid rgba(232,236,239,0.16);background:#1a2a32;padding:4px 10px;font-family:'JetBrains Mono',monospace;font-size:12px;color:#e8ecef";return c;}
+  function paintTile(t,i,state,hist){
+    var dot=t.querySelector('.st'),lab=dot.parentNode,c=state==='up'?OK:state==='down'?CRIT:'transparent';
+    dot.style.background=c;dot.style.borderColor=state==='none'?GREY:c;
+    lab.lastChild.nodeValue=state==='none'?'no data':state;
+    if(cells[i]){cells[i].style.background=c;cells[i].style.borderColor=state==='none'?'rgba(232,236,239,0.25)':c;}
+    var b=t.querySelector('.beats');if(b){var kids=b.children,pad=24-hist.length;
+      for(var k=0;k<24;k++){var v=k<pad?null:hist[k-pad];kids[k].style.background=v==null?NONE:(v?OK:CRIT);}}
+  }
+  function render(st,hi){
+    var svc={},hasSvc=st&&st.services;
+    if(hasSvc)Object.keys(st.services).forEach(function(u){svc[norm(u)]=st.services[u];});
+    var up=0,known=0;
+    tiles.forEach(function(t,i){
+      if(t.getAttribute('href')==='waf/'||t.getAttribute('href')==='siem/')return;   // painted from their own api/status.json   // painted from waf/api/status.json, not the host probe
+      var key=norm(t.getAttribute('href')),r=svc[key];
+      var h=(hi||[]).filter(function(e){return e.svc&&key in Object.keys(e.svc).reduce(function(o,u){o[norm(u)]=e.svc[u];return o;},{});})
+        .map(function(e){var m={};Object.keys(e.svc).forEach(function(u){m[norm(u)]=e.svc[u];});return m[key];}).slice(-24);
+      if(r){known++;if(r.up)up++;}
+      paintTile(t,i,r?(r.up?'up':'down'):'none',h);
+      t.title=r?('HTTP '+(r.code||'no answer')+(r.ms!=null?' · '+r.ms+' ms':'')):'not probed';
+    });
+    var age=st?(Date.now()-Date.parse(st.ts))/60000:Infinity,stale=age>20;
+    $('upCount').textContent=known?up+'/'+known:'—';
+    $('upLabel').textContent=known?(known-up?(known-up)+' not answering':'all answering'):'no probe data yet';
+    var hd=$('headDot'),down=known-up;
+    var hc=!st?GREY:stale?WARN:(!st.ok||down)?CRIT:OK;
+    hd.style.background=hc;hd.style.boxShadow='0 0 8px '+hc;
+    $('headStatus').textContent=!st?'No data':stale?'Stale data':(st.ok&&!down)?'All systems nominal':((st.problems.length?st.problems.length+' problem'+(st.problems.length>1?'s':''):'')+(st.problems.length&&down?' · ':'')+(down?down+' down':''));
+    // health panel
+    if(!st){$('hHead').textContent='No data';$('hWhen').textContent='health/status.json missing or unreadable';return;}
+    var n=st.problems.length;
+    $('hDot').style.background=st.ok?OK:CRIT;
+    $('hHead').textContent=st.ok?'Host healthy':n+' problem'+(n>1?'s':'');
+    var d=new Date(st.ts);
+    $('hWhen').textContent='last run '+d.toLocaleString([], {weekday:'short',hour:'2-digit',minute:'2-digit'})+' · every 15 min';
+    $('hStale').hidden=!stale;
+    var hh=$('hHist');hh.innerHTML='';var list=(hi||[]).slice(-192),pad=192-list.length;
+    for(var k=0;k<192;k++){var e=k<pad?null:list[k-pad],x=document.createElement('span');
+      x.style.background=e==null?NONE:(e.ok?OK:CRIT);if(e)x.title=e.ts+(e.ok?' · ok':' · '+e.n_problems+' problem(s)');hh.appendChild(x);}
+    var c=$('hChips');c.innerHTML='';var H=st.host||{},M=st.media;
+    if(H.root_free_gib!=null)c.appendChild(chip('root free '+H.root_free_gib+' GiB'));
+    if(H.pve2_pct!=null)c.appendChild(chip('pve2-media '+H.pve2_pct+'% used'));
+    if(H.containers!=null)c.appendChild(chip('containers '+H.containers));
+    if(H.backup_age_h!=null)c.appendChild(chip('last backup '+H.backup_age_h+' h ago'));
+    if(M&&M.receipts)c.appendChild(chip('receipts '+M.receipts.ok+'/'+M.receipts.files+' files'));
+    if(M&&M.binds)c.appendChild(chip('binds '+M.binds.binds+' in '+M.binds.containers+' containers'));
+    if(!M)c.appendChild(chip('media: no data'));
+    var ul=$('hProbs');ul.innerHTML='';st.problems.forEach(function(p){var li=document.createElement('li');li.textContent='× '+p;ul.appendChild(li);});
+  }
+  function load(){
+    var o={cache:'no-store'};
+    Promise.all([fetch('health/status.json',o).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}),
+                 fetch('health/history.json',o).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;})])
+      .then(function(a){try{render(a[0],Array.isArray(a[1])?a[1]:[]);}catch(e){console.error('health render',e);}});
+  }
+  load();setInterval(load,60000);
+})();
+</script>
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i);},OK='#5fd38a',WARN='#f0a030',CRIT='#ff8a7d',GREY='#8b989f',ACC='#4fd8f5';
+  function chip(t,bad){var s=document.createElement('span');s.textContent=t;s.style.cssText='border:1px solid '+(bad?CRIT:'rgba(232,236,239,0.16)')+';padding:2px 9px;font-family:JetBrains Mono,monospace;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:'+(bad?CRIT:GREY);return s;}
+  function paintWafTile(s){
+    var t=document.querySelector('a.tile[href="waf/"]');if(!t)return;
+    var all=[].slice.call(document.querySelectorAll('a.tile')),cells=document.querySelectorAll('.cell'),i=all.indexOf(t);
+    var dot=t.querySelector('.st'),lab=dot.parentNode,TOK='#2ecc71',TCRIT='#e74c3c';
+    var c=!s?TCRIT:({ok:TOK,warn:WARN,crit:TCRIT}[s.level]||GREY),txt=!s?'api down':s.level==='ok'?'up':s.level==='warn'?'warn':'down';
+    dot.style.background=c;dot.style.borderColor=c;lab.lastChild.nodeValue=txt;t.title=s?s.headline:'waf-ui not answering';
+    if(cells[i]){cells[i].style.background=c;cells[i].style.borderColor=c;}
+    var b=t.querySelector('.beats');if(b&&s){var h=s.hourly48.slice(-24);for(var k=0;k<24;k++){b.children[k].style.background=h[k]?ACC:'rgba(232,236,239,0.10)';b.children[k].title=h[k]+' event'+(h[k]===1?'':'s');}}
+  }
+  function render(s){
+    paintWafTile(s);
+    if(!s){$('wDot').style.background=GREY;$('wDot').style.boxShadow='none';$('wHead').textContent='API down';$('wWhen').textContent='waf-ui not answering (the WAF itself is unaffected)';$('wStale').hidden=true;return;}
+    var c={ok:OK,warn:WARN,crit:CRIT}[s.level]||GREY;$('wDot').style.background=c;$('wDot').style.boxShadow=s.level==='ok'||s.level==='crit'?'0 0 8px '+c:'none';
+    $('wHead').textContent=s.headline;
+    var age=(Date.now()-Date.parse(s.ts))/60000;$('wStale').hidden=!(age>5);
+    $('wWhen').textContent=(s.last_event_ts?'last event '+new Date(s.last_event_ts*1000).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'}):'no events in 7 d')+' · refreshes every 60 s';
+    var h=$('wHist');h.innerHTML='';var top=Math.max.apply(null,s.hourly48.concat([1]));
+    s.hourly48.forEach(function(v){var x=document.createElement('span');x.style.cssText='display:block;background:'+(v?ACC:'rgba(232,236,239,0.10)')+';height:'+(v?Math.max(3,Math.round(22*v/top)):2)+'px';x.title=v+' event'+(v===1?'':'s');h.appendChild(x);});
+    var k=$('wChips');k.innerHTML='';var t=s.tunnels||{},names=Object.keys(t),behind=names.filter(function(n){return t[n]===true;}).length;
+    k.appendChild(chip('container '+(s.container&&s.container.running?s.container.health:'down'),!(s.container&&s.container.running)));
+    k.appendChild(chip('tunnels '+behind+'/'+names.length+' behind waf',behind!==names.length));
+    k.appendChild(chip('mode '+s.mode,s.mode!=='On'&&s.mode!=='DetectionOnly'));
+    k.appendChild(chip('bans '+s.bans));k.appendChild(chip('exclusions '+s.exclusions));
+    k.appendChild(chip('7 d '+s.counts7d.events+' events · '+s.counts7d.blocked+' blocked'));
+  }
+  function load(){fetch('waf/api/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}).then(function(s){try{render(s);}catch(e){console.error('waf render',e);render(null);}});}
+  load();setInterval(load,60000);
+})();
+</script>
+<!-- media-ui tile: painted from media/api/status.json; kept after the page scripts like the WAF tile -->
+<script>
+(function(){
+  var chip = function(t, c){ return '<span style="border: 1px solid ' + (c || 'rgba(232,236,239,0.16)') + '; color: ' + (c || '#8b989f') + '; padding: 2px 9px; font-family: \'JetBrains Mono\', monospace; font-size: 11px; letter-spacing: 1.2px; text-transform: uppercase">' + t + '</span>'; };
+  function refresh(){
+    fetch('media/api/status.json', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(s){
+      document.getElementById('mDot').style.background = s.level === 'ok' ? '#5fd38a' : '#f0a030';
+      document.getElementById('mHead').textContent = s.headline;
+      var lm = s.last_move ? ('last move ' + s.last_move.item + ' · ' + s.last_move.when.slice(0, 16).replace('T', ' ') + ' · ' + s.last_move.status) : 'no moves yet';
+      document.getElementById('mWhen').textContent = lm;
+      var chips = Object.keys(s.libraries).map(function(k){ return chip(k + ' · ' + s.libraries[k]); });
+      chips.push(chip('jellyfin ' + (s.jellyfin_online ? 'online' : 'offline'), s.jellyfin_online ? null : '#f0a030'));
+      document.getElementById('mChips').innerHTML = chips.join('');
+    }).catch(function(){ document.getElementById('mWhen').textContent = 'media-ui not answering'; document.getElementById('mDot').style.background = '#ff8a7d'; });
+  }
+  refresh(); setInterval(refresh, 60000);
+})();
+</script>
+<!-- siem-ui tile + section: painted from siem/api/status.json (see /root/siem-ui/README.md) -->
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i);},OK='#5fd38a',WARN='#f0a030',CRIT='#ff8a7d',GREY='#8b989f',ACC='#4fd8f5';
+  function chip(t,bad){var s=document.createElement('span');s.textContent=t;s.style.cssText='border:1px solid '+(bad?CRIT:'rgba(232,236,239,0.16)')+';padding:2px 9px;font-family:JetBrains Mono,monospace;font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:'+(bad?CRIT:GREY);return s;}
+  function paintTile(s){
+    var t=document.querySelector('a.tile[href="siem/"]');if(!t)return;
+    var all=[].slice.call(document.querySelectorAll('a.tile')),cells=document.querySelectorAll('.cell'),i=all.indexOf(t);
+    var dot=t.querySelector('.st'),lab=dot.parentNode;
+    var c=!s?CRIT:({ok:OK,warn:WARN,crit:CRIT}[s.level]||GREY),txt=!s?'api down':s.level==='ok'?'quiet':s.level==='warn'?'open alerts':'critical';
+    dot.style.background=c;dot.style.borderColor=c;lab.lastChild.nodeValue=txt;t.title=s?s.headline:'siem-ui not answering';
+    if(cells[i]){cells[i].style.background=c;cells[i].style.borderColor=c;}
+    var b=t.querySelector('.beats');if(b&&s){var h=s.hourly48.slice(-24);for(var k=0;k<24;k++){b.children[k].style.background=h[k]?ACC:'rgba(232,236,239,0.10)';b.children[k].title=h[k]+' alert'+(h[k]===1?'':'s');}}
+  }
+  function render(s){
+    paintTile(s);
+    if(!s){$('sDot').style.background=GREY;$('sDot').style.boxShadow='none';$('sHead').textContent='API down';$('sWhen').textContent='siem-ui not answering (the SIEM timers are unaffected)';return;}
+    var c={ok:OK,warn:WARN,crit:CRIT}[s.level]||GREY;$('sDot').style.background=c;$('sDot').style.boxShadow=s.level==='ok'||s.level==='crit'?'0 0 8px '+c:'none';
+    $('sHead').textContent=s.headline;
+    $('sWhen').textContent=(s.last_alert_ts?'last alert '+new Date(s.last_alert_ts*1000).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'}):'no alerts')+(s.finding_ts?' · llm verdict '+s.finding_ts.slice(0,16).replace('T',' ')+'Z':'')+' · refreshes every 60 s';
+    var h=$('sHist');h.innerHTML='';var top=Math.max.apply(null,s.hourly48.concat([1]));
+    s.hourly48.forEach(function(v){var x=document.createElement('span');x.style.cssText='display:block;background:'+(v?ACC:'rgba(232,236,239,0.10)')+';height:'+(v?Math.max(3,Math.round(22*v/top)):2)+'px';x.title=v+' alert'+(v===1?'':'s');h.appendChild(x);});
+    var k=$('sChips');k.innerHTML='';
+    k.appendChild(chip('llm '+s.finding_health+(s.finding_n?' · '+s.finding_n+' finding'+(s.finding_n===1?'':'s'):''),s.finding_health==='CRITICAL'||s.llm_error));
+    k.appendChild(chip('analyzer '+s.analyze,s.analyze==='failed'));
+    k.appendChild(chip('incidents '+s.incidents_open+' open / '+s.incidents,s.incidents_open>0));
+    k.appendChild(chip('24 h '+s.counts24h.open+' open · '+s.counts24h.critical+' crit · '+s.counts24h.high+' high',s.counts24h.critical>0));
+    Object.keys(s.sources7d||{}).forEach(function(n){k.appendChild(chip(n+' '+s.sources7d[n]));});
+  }
+  function load(){fetch('siem/api/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}).then(function(s){try{render(s);}catch(e){console.error('siem render',e);render(null);}});}
+  load();setInterval(load,60000);
+})();
+</script>
+<!-- pickup section: painted from pickup/status.json, written by foxzilla-pickup (~/foxzilla/pickup, Progress class) -->
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i);},OK='#5fd38a',WARN='#f0a030',GREY='#8b989f',ACC='#4fd8f5';
+  var PH={hashing:'Hashing',copying:'Copying to NAS',verifying:'Verifying',committing:'Committing',remuxing:'Remuxing ISO'};
+  function size(b){if(b==null)return '';var u=['B','KB','MB','GB','TB'],i=0;while(b>=1024&&i<4){b/=1024;i++;}return b.toFixed(1)+' '+u[i];}
+  function dur(s){s=Math.max(0,Math.round(s));var h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return h?h+'h '+m+'m':m?m+'m '+x+'s':x+'s';}
+  function when(t){return new Date(t*1000).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'});}
+  function dot(c){$('pDot').style.background=c;$('pDot').style.boxShadow=c===GREY?'none':'0 0 8px '+c;}
+  function render(s){
+    var q=(s&&s.queue)||[],a=s&&s.active;
+    $('pQueue').innerHTML='';
+    if(!s){dot(GREY);$('pHead').textContent='Pickup status unavailable';$('pWhen').textContent='pickup/status.json missing or unreadable';$('pWhen').style.color=GREY;$('pBarWrap').hidden=true;$('pMeta').textContent='';$('pStale').hidden=true;return 30000;}
+    var stale=s.state==='active'&&(Date.now()/1000-s.updated)>180;
+    $('pStale').hidden=!stale;
+    if(s.state==='active'&&a){
+      var pct=a.total?Math.min(100,100*a.done/a.total):0;
+      dot(stale?WARN:ACC);
+      $('pHead').textContent=a.name;
+      $('pWhen').textContent=(PH[a.phase]||a.phase)+' · '+pct.toFixed(1)+'%';$('pWhen').style.color=GREY;$('pWhen').title='';
+      $('pBarWrap').hidden=false;$('pBarWrap').setAttribute('aria-valuenow',pct.toFixed(0));
+      $('pBar').style.width=pct+'%';$('pBar').style.background=stale?GREY:ACC;
+      var m=[];
+      if(a.unit==='bytes'){m.push(size(a.done)+' / '+size(a.total));if(a.rate&&!stale)m.push(size(a.rate)+'/s');}
+      else if(a.unit==='seconds'){m.push(dur(a.done)+' / '+dur(a.total)+' of film');if(a.rate&&!stale)m.push(a.rate.toFixed(1)+'× realtime');}
+      if(a.eta_s!=null&&!stale)m.push('ETA '+dur(a.eta_s));
+      if(a.files_total)m.push(a.files_done+'/'+a.files_total+' files');
+      m.push('item started '+when(a.item_started));
+      $('pMeta').textContent=m.join(' · ');$('pMeta').title=a.file||'';
+    }else{
+      var l=s.last,bad=l&&l.result==='failed';
+      dot(bad?WARN:OK);
+      $('pHead').textContent='Idle';
+      $('pWhen').textContent=l?('last: '+l.name+' · '+(l.result==='ok'?'filed':l.result)+' '+when(l.finished)):'nothing processed yet';
+      $('pWhen').style.color=bad?WARN:GREY;$('pWhen').title=(l&&l.error)||'';
+      $('pBarWrap').hidden=true;$('pMeta').textContent='';
+    }
+    q.forEach(function(r){
+      var li=document.createElement('li'),bad=/held|failed/.test(r.state)||!!r.error;
+      li.textContent=r.name+(r.bytes!=null?' · '+size(r.bytes):'')+' · '+r.state;
+      li.style.color=bad?WARN:GREY;if(r.error)li.title=r.error;
+      $('pQueue').appendChild(li);
+    });
+    return s.state==='active'?5000:30000;
+  }
+  function load(){
+    fetch('pickup/status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;})
+      .then(function(s){var next=30000;try{next=render(s);}catch(e){console.error('pickup render',e);try{render(null);}catch(_){}}setTimeout(load,next);});
+  }
+  load();
+})();
+</script>
+</body>
+</html>
