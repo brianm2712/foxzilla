@@ -7,7 +7,7 @@ import os
 import ssl
 import threading
 import time
-from ftplib import FTP, FTP_TLS
+from ftplib import FTP, FTP_TLS, error_perm, error_temp
 
 from .base import CHUNK, Backend, Entry, _int, _ls_time
 
@@ -188,6 +188,8 @@ class FTPBackend(Backend):
         """
         try:
             return transfer()
+        except (error_perm, error_temp):
+            raise          # refused outright (4xx/5xx): nothing in flight, still clean
         except BaseException:
             try:
                 self.ftp.abort()
