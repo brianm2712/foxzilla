@@ -266,6 +266,12 @@ class Progress:
             a["file"] = file
         self._write()
 
+    def touch(self):
+        """Keep the card fresh during work that reports no bytes (throttled)."""
+        if not self.path:
+            return
+        self._write()
+
     def finish(self, name, result, error=None):
         if not self.path:
             return
@@ -709,7 +715,8 @@ def commit(staging, dest, quarantine, log, dry_run=False, progress=NULL_PROGRESS
         os.makedirs(os.path.dirname(target), exist_ok=True)
         if os.path.exists(target):
             if os.path.getsize(target) == os.path.getsize(full) \
-                    and sha256_file(target) == sha256_file(full):
+                    and sha256_file(target, on_chunk=lambda n: progress.touch()) \
+                    == sha256_file(full, on_chunk=lambda n: progress.touch()):
                 skipped.append(rel)
                 os.remove(full)
                 placements[rel] = target
@@ -1034,15 +1041,22 @@ def remux_title(iso, title_no, out_path, on_time=None):
            "-i", iso, "-map", "0", "-c", "copy", "-f", "matroska", out_path]
     # stderr goes to a file, not a pipe: reading stdout to the end while
     # stderr fills its pipe buffer would deadlock ffmpeg.
-    with tempfile.TemporaryFile(mode="w+") as err:
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, text=True)
-        for line in p.stdout:
-            if on_time and line.startswith("out_time_us="):
-                try:
-                    on_time(int(line.split("=", 1)[1]) / 1e6)
-                except ValueError:
-                    pass
-        rc = p.wait()
+    with tempfile.TemporaryFile(mode="w+", errors="replace") as err:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, text=True,
+                             errors="replace")
+        try:
+            for line in p.stdout:
+                if on_time and line.startswith("out_time_us="):
+                    try:
+                        on_time(int(line.split("=", 1)[1]) / 1e6)
+                    except ValueError:
+                        pass
+            rc = p.wait()
+        except BaseException:
+            # Never leave ffmpeg running (and writing) behind an error.
+            p.kill()
+            p.wait()
+            raise
         err.seek(0)
         stderr = err.read()
     if rc != 0:
@@ -1338,7 +1352,7 @@ def main(argv=None):
 
     # Only the run holding the lock may touch the status file: a skipped tick
     # writing "idle" would clobber the live run's progress.
-    progress = Progress(cfg["status_file"], log=log)
+    progress = Progress("" if args.dry_run else cfg["status_file"], log=log)
     rows = {}
 
     try:

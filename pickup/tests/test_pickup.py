@@ -532,6 +532,7 @@ class Rec:
     def queue(self, rows): pass
     def finish(self, *a, **k): pass
     def idle(self): pass
+    def touch(self): self.touches = getattr(self, 'touches', 0) + 1
 
 print("\nprogress: hashing reports every byte and every file")
 e = Env()
@@ -727,6 +728,58 @@ check("the mkv was filed", os.path.isdir(os.path.join(e.movies, "Test Disc")), o
 check("last is the filed mkv item", doc["last"]["name"] == "Test Disc" and doc["last"]["result"] == "ok", doc["last"])
 check("no iso or mkv row left in the queue", doc["queue"] == [], doc["queue"])
 check("ends idle", doc["state"] == "idle" and doc["active"] is None, doc)
+
+print("\nreview fixes: dry run publishes no status")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+mkfile(os.path.join(e.upload, "Film (2020).mkv"), size=500)
+e.run("--status-file", sp, "--dry-run")
+check("dry run wrote no status file", not os.path.exists(sp))
+
+print("\nreview fixes: ffmpeg is reaped when the progress callback raises")
+import time
+e = Env()
+ffstubs(e.base, {1: 100.0})
+enc = os.path.join(e.base, "bin", "ffmpeg")
+with open(enc, "w") as fh:
+    fh.write("#!/usr/bin/env python3\nimport time,sys\n"
+             "print('out_time_us=1000000', flush=True)\ntime.sleep(30)\n")
+os.chmod(enc, 0o755); MP.FFMPEG = enc
+def boom(_s): raise RuntimeError("boom")
+t0 = time.monotonic(); raised = None
+try:
+    MP.remux_title("x.iso", 1, os.path.join(e.base, "o.mkv"), on_time=boom)
+except RuntimeError as ex:
+    raised = ex
+dt = time.monotonic() - t0
+check("RuntimeError propagates", raised is not None and str(raised) == "boom", raised)
+check("returned without waiting for ffmpeg", dt < 10, dt)
+MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+
+print("\nreview fixes: Progress.touch keeps the card fresh")
+e = Env()
+sp = os.path.join(e.base, "touch.json")
+t = [100.0]
+p = MP.Progress(sp, clock=lambda: t[0], mono=lambda: t[0])
+p.begin("A", "committing", None)
+w0, u0 = p.writes, json.load(open(sp))["updated"]
+t[0] = 103.0; p.touch()
+check("touch wrote once", p.writes == w0 + 1, (w0, p.writes))
+check("updated moved", json.load(open(sp))["updated"] != u0)
+p.touch()
+check("touch is throttled", p.writes == w0 + 1, p.writes)
+ip = MP.Progress(""); ip.touch()
+check("inert touch is a no-op", ip.writes == 0)
+
+print("\nreview fixes: commit merge-hashing touches progress")
+e = Env()
+stg = os.path.join(e.base, "stg", "Pack"); dst = os.path.join(e.shows, "Pack")
+same = os.urandom(MP.CHUNK + 5)
+mkfile(os.path.join(stg, "a.mkv"), content=same); mkfile(os.path.join(dst, "a.mkv"), content=same)
+r = Rec()
+_pl, sk, _cf = MP.commit(stg, dst, os.path.join(e.base, "q"), lambda *a, **k: None, progress=r)
+check("identical file skipped", sk == ["a.mkv"], sk)
+check("hashing both copies touched the card", getattr(r, "touches", 0) >= 2, getattr(r, "touches", 0))
 
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
