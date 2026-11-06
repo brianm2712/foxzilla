@@ -974,6 +974,67 @@ check("and logs a WARN", any("WARN" in l and "staging" in l for l in e.tail(20))
 nul = MP.Progress(""); nul.staging([{"path": "x"}])
 check("Progress.staging inert without path", "staging" not in nul.doc and nul.writes == 0)
 
+print("\nhealth: --health means the watcher is alive, not just logged in")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+saved_env = os.environ.pop("STATUS_FILE", None)
+def health_with(doc, *extra):
+    if doc is None:
+        if os.path.exists(sp): os.remove(sp)
+    else:
+        with open(sp, "w") as fh: json.dump(doc, fh)
+    return MP.main(["--health", "--status-file", sp, "--lock-file", e.lock,
+                    "--log-file", e.log, *extra])
+def sdoc(state, age, active=None):
+    return {"version": 1, "state": state, "updated": time.time() - age,
+            "active": active, "queue": [], "last": None}
+try:
+    check("fresh idle -> 0", health_with(sdoc("idle", 5)) == 0)
+    check("idle 400s old -> 1", health_with(sdoc("idle", 400)) == 1)
+    act = {"name": "Big Box Set", "phase": "copying"}
+    check("active 500s old -> 0", health_with(sdoc("active", 500, act)) == 0)
+    check("active 700s old -> 1", health_with(sdoc("active", 700, act)) == 1)
+    check("missing file -> 1", health_with(None) == 1)
+    with open(sp, "w") as fh: fh.write("{not json")
+    check("unreadable file -> 1", MP.main(["--health", "--status-file", sp]) == 1)
+    check("updated missing -> 1", health_with({"state": "idle"}) == 1)
+    check("unknown state -> 1", health_with(sdoc("weird", 1)) == 1)
+    check("health took no lock and logged nothing",
+          not os.path.exists(e.lock) and not os.path.exists(e.log), os.listdir(e.base))
+    import io, contextlib
+    buf = io.StringIO()
+    with open(sp, "w") as fh: json.dump(sdoc("active", 700, act), fh)
+    with contextlib.redirect_stdout(buf):
+        MP.main(["--health", "--status-file", sp])
+    out = buf.getvalue().strip()
+    check("stale active says name and phase on one line",
+          "Big Box Set" in out and "copying" in out and "\n" not in out, out)
+    os.environ["STATUS_FILE"] = sp
+    with open(sp, "w") as fh: json.dump(sdoc("idle", 1), fh)
+    check("env STATUS_FILE is honoured", MP.main(["--health"]) == 0)
+    with open(sp, "w") as fh: json.dump(sdoc("idle", 400), fh)
+    check("env STATUS_FILE stale -> 1", MP.main(["--health"]) == 1)
+    os.environ.pop("STATUS_FILE", None)
+    calls = []
+    real_who = MP.cmd_whoami
+    MP.cmd_whoami = lambda: calls.append(1) or 0
+    try:
+        rc = MP.main(["--health"])
+        os.environ["STATUS_FILE"] = ""
+        rc2 = MP.main(["--health"])
+    finally:
+        MP.cmd_whoami = real_who
+    check("no status path -> falls back to whoami", rc == 0 and rc2 == 0 and len(calls) == 2, calls)
+finally:
+    os.environ.pop("STATUS_FILE", None)
+    if saved_env is not None:
+        os.environ["STATUS_FILE"] = saved_env
+dockerfile = open(os.path.join(os.path.dirname(HERE), "Dockerfile")).read()
+check("Dockerfile healthcheck uses --health",
+      "HEALTHCHECK --interval=2m --timeout=10s --start-period=3m --retries=2 "
+      "CMD python3 /app/media_pickup.py --health || exit 1" in dockerfile
+      and "--whoami ||" not in dockerfile)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]

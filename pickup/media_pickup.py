@@ -905,6 +905,49 @@ def cmd_whoami():
     return 0
 
 
+# --health: is the watcher alive? Idle runs come every 60s and always write
+# "idle"; an active run rewrites status at least every few seconds while it
+# progresses. A run that cannot take the lock writes nothing.
+HEALTH_IDLE_MAX_AGE = 300      # seconds since an idle write
+HEALTH_ACTIVE_MAX_AGE = 600    # seconds since an active write
+
+
+def cmd_health(status_file, clock=time.time):
+    """
+    Exit 0 if status.json is fresh for its state, else 1 with one line of why.
+    Read-only: takes no lock and writes nothing. No status file configured
+    means there is nothing to judge by, so fall back to the credential check.
+    """
+    if not status_file:
+        return cmd_whoami()
+    try:
+        with open(status_file) as fh:
+            doc = json.load(fh)
+        state, updated = doc.get("state"), float(doc["updated"])
+    except FileNotFoundError:
+        print(f"unhealthy: status file {status_file} missing")
+        return 1
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
+        print(f"unhealthy: status file {status_file} unreadable ({type(e).__name__})")
+        return 1
+    age = clock() - updated
+    if state == "idle":
+        if age <= HEALTH_IDLE_MAX_AGE:
+            return 0
+        print(f"unhealthy: idle but status not updated for {age:.0f}s "
+              f"(limit {HEALTH_IDLE_MAX_AGE}s)")
+        return 1
+    if state == "active":
+        if age <= HEALTH_ACTIVE_MAX_AGE:
+            return 0
+        a = doc.get("active") or {}
+        print(f"unhealthy: active on {a.get('name')!r} ({a.get('phase')}) but status "
+              f"not updated for {age:.0f}s (limit {HEALTH_ACTIVE_MAX_AGE}s)")
+        return 1
+    print(f"unhealthy: unknown state {state!r} in {status_file}")
+    return 1
+
+
 def jf_headers(token=None):
     auth = ('MediaBrowser Client="MediaPickup", Device="MediaPickup", '
             'DeviceId="media-pickup-1", Version="2.0.0"')
@@ -1413,6 +1456,8 @@ def main(argv=None):
     ap.add_argument("--api-key", help="store a Jellyfin API key instead of logging in")
     ap.add_argument("--logout", action="store_true", help="remove the stored credential")
     ap.add_argument("--whoami", action="store_true", help="show who is authenticated")
+    ap.add_argument("--health", action="store_true",
+                    help="container healthcheck: exit 0 if status.json shows a live watcher")
     args = ap.parse_args(argv)
     cfg = build_config(args)
 
@@ -1424,6 +1469,10 @@ def main(argv=None):
         return cmd_logout()
     if args.whoami:
         return cmd_whoami()
+    if args.health:
+        # The healthcheck runs outside the entrypoint, so --status-file is
+        # usually absent; the container's STATUS_FILE env is the fallback.
+        return cmd_health(cfg["status_file"] or os.environ.get("STATUS_FILE", ""))
 
     log = Log(cfg["log_file"])
 

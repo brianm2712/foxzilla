@@ -38,7 +38,9 @@ ENV MEDIA_PICKUP_CREDENTIALS=/config/credentials.json \
     INTERVAL=60 \
     RUN_ONCE=
 
-HEALTHCHECK --interval=5m --timeout=10s \
-    CMD python3 /app/media_pickup.py --whoami || exit 1
+# Healthy = the watcher is alive: status.json was written recently for its
+# state (idle runs every INTERVAL, an active run while it progresses). With no
+# STATUS_FILE it falls back to the old credential check.
+HEALTHCHECK --interval=2m --timeout=10s --start-period=3m --retries=2 CMD python3 /app/media_pickup.py --health || exit 1
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
