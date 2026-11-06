@@ -832,6 +832,78 @@ check("progress through stability is still logged",
 e.run(force=False)
 check("and it is filed once stable", not os.path.exists(f), e.tail(3))
 
+print("\none_item_per_run  (a 12-item backlog held the lock for hours; new arrivals went unseen)")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+mkfile(os.path.join(e.upload, "Alpha (2001).mkv"), 2048)
+mkfile(os.path.join(e.upload, "Beta (2002).mkv"), 2048)
+e.run("--status-file", sp)
+filed = sorted(os.listdir(e.movies))
+filed = [f for f in filed if not f.startswith(".")]
+check("run 1 files exactly one item", filed == ["Alpha (2001)"], filed)
+check("the other stays in the inbox", os.path.exists(os.path.join(e.upload, "Beta (2002).mkv")))
+rows = {r["name"]: r for r in json.load(open(sp))["queue"]}
+check("its row says 'ready (next run)'", rows.get("Beta (2002).mkv", {}).get("state") == "ready (next run)", rows)
+st = json.load(open(e.state)).get("Beta (2002).mkv", {})
+check("its state keeps it ready", "shape" in st and "held" not in st and "last_error" not in st, st)
+e.run("--status-file", sp)
+filed = sorted(f for f in os.listdir(e.movies) if not f.startswith("."))
+check("run 2 files the other", filed == ["Alpha (2001)", "Beta (2002)"], filed)
+check("queue empty after run 2", json.load(open(sp))["queue"] == [], json.load(open(sp))["queue"])
+
+print("\none_item_per_run: a deferred item keeps its stability and its marker")
+e = Env()
+for n in ("Gamma.Show.S01E01.mkv", "Delta.Show.S01E01.mkv"):
+    f = os.path.join(e.upload, n); mkfile(f, 2048)
+    old = time.time() - 2 * MP.QUIET_SECONDS; os.utime(f, (old, old))
+open(MP.marker_for(e.upload, "Gamma.Show.S01E01.mkv"), "w").write("done")
+open(MP.marker_for(e.upload, "Delta.Show.S01E01.mkv"), "w").write("done")
+e.run(force=False)
+check("one marked item filed", sorted(os.listdir(e.shows)) == ["Delta Show"], os.listdir(e.shows))
+check("the deferred item's marker is kept", os.path.exists(MP.marker_for(e.upload, "Gamma.Show.S01E01.mkv")))
+check("the deferred item did not claim to be acted on",
+      not any("Gamma.Show.S01E01.mkv: upload marked complete" in l for l in open(e.log).read().splitlines()))
+e.run(force=False)
+check("next run files it without re-waiting", "Gamma Show" in os.listdir(e.shows), e.tail(4))
+check("and its marker is then removed", not os.path.exists(MP.marker_for(e.upload, "Gamma.Show.S01E01.mkv")))
+e = Env()
+f = os.path.join(e.upload, "Eps.Show.S01E01.mkv"); mkfile(f, 2048)
+g = os.path.join(e.upload, "Zed.Show.S01E01.mkv"); mkfile(g, 2048)
+old = time.time() - 2 * MP.QUIET_SECONDS
+for x in (f, g): os.utime(x, (old, old))
+e.run(force=False); e.run(force=False); e.run(force=False)
+check("stable items: one filed on the first ready run", os.path.isdir(os.path.join(e.shows, "Eps Show"))
+      and os.path.exists(g), os.listdir(e.shows))
+e.run(force=False)
+check("the deferred stable item is filed on the very next run", not os.path.exists(g), e.tail(4))
+nexts = [l for l in open(e.log).read().splitlines() if "next run: Zed.Show" in l]
+check("'next run' logged once", len(nexts) == 1, nexts)
+
+print("\none_item_per_run: an iso conversion plus filing its mkv is the one item")
+e = Env()
+sp = os.path.join(e.base, "status.json")
+ffstubs(e.base, {1: 100.0})
+MP.jf_movie_lookup = lambda *a: None
+mkiso(os.path.join(e.upload, "AAA_DISC.iso"), "AAA_DISC")
+mkfile(os.path.join(e.upload, "Bravo (2003).mkv"), 2048)
+e.run("--status-file", sp)
+filed = sorted(f for f in os.listdir(e.movies) if not f.startswith("."))
+check("run 1 converts and files the disc only", filed == ["Aaa Disc"], (filed, e.tail(6)))
+rows = {r["name"]: r for r in json.load(open(sp))["queue"]}
+check("the other item waits for the next run", rows.get("Bravo (2003).mkv", {}).get("state") == "ready (next run)", rows)
+e.run("--status-file", sp)
+check("run 2 files it", os.path.isdir(os.path.join(e.movies, "Bravo (2003)")), os.listdir(e.movies))
+e = Env()
+calls = ffstubs(e.base, {1: 100.0}, fail=True)
+mkiso(os.path.join(e.upload, "AAA_BAD.iso"), "AAA_BAD")
+mkfile(os.path.join(e.upload, "Bravo (2003).mkv"), 2048)
+e.run()
+check("a failed conversion counts as the run's attempt", os.path.exists(os.path.join(e.upload, "Bravo (2003).mkv")), os.listdir(e.movies))
+e.run()
+check("next run files the other item", os.path.isdir(os.path.join(e.movies, "Bravo (2003)")), os.listdir(e.movies))
+check("the failed disc was not retried", open(calls).read().count("\n") == 1, open(calls).read())
+MP.FFMPEG, MP.FFPROBE = "/nonexistent/ffmpeg", "/nonexistent/ffprobe"
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]

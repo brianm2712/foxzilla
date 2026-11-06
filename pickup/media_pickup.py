@@ -1368,6 +1368,15 @@ def main(argv=None):
 
         state = load_state(cfg["state_file"])
         processed = []
+        # One item per run. A run holds the lock for as long as it works, so
+        # filing a whole backlog in one go (12 large items took hours) left
+        # new arrivals unobserved, the dashboard queue stale, and a deploy
+        # with no choice but to kill a copy mid-flight. Once one item has
+        # been attempted, the rest are still observed - state, rows and logs
+        # stay current - but only marked ready for the next run. A disc
+        # conversion and the filing of its MKV are one item together.
+        attempted = False
+        converted = None
 
         for name in entries:
             path = os.path.join(cfg["upload_dir"], name)
@@ -1431,13 +1440,9 @@ def main(argv=None):
                 state[name] = {"shape": now["shape"], "stable": 0, "said": said}
                 rows[name] = queue_row(name, now, "uploading", err)
                 continue
-            if declared:
-                # The uploader has verified this item and said so. Trusting
-                # that is safe: the manifest is rebuilt and every file is
-                # hashed again before anything is deleted, so a marker written
-                # too early costs a failed run, never data.
-                log(f"{name}: upload marked complete by the sender")
-            elif time.time() - now["newest"] < QUIET_SECONDS and not args.force:
+            # A declared item (marker present) skips the quiet and stability
+            # waits: see below where it is acted on.
+            if not declared and time.time() - now["newest"] < QUIET_SECONDS and not args.force:
                 said = say(f"watching {name}: written to in the last {QUIET_SECONDS}s")
                 state[name] = {"shape": now["shape"], "stable": 0, "said": said}
                 rows[name] = queue_row(name, now, "writing", err)
@@ -1451,12 +1456,29 @@ def main(argv=None):
                 rows[name] = queue_row(name, now, f"stable {stable}/{STABLE_POLLS}", err)
                 continue
 
+            if attempted and name != converted:
+                # Ready, but this run has had its item. Keep the stability
+                # count (and the marker) so the next run acts without
+                # re-waiting.
+                said = say(f"next run: {name}")
+                state[name] = {"shape": now["shape"], "stable": stable, "said": said}
+                rows[name] = queue_row(name, now, "ready (next run)", err)
+                continue
+
+            if declared:
+                # The uploader has verified this item and said so. Trusting
+                # that is safe: the manifest is rebuilt and every file is
+                # hashed again before anything is deleted, so a marker written
+                # too early costs a failed run, never data.
+                log(f"{name}: upload marked complete by the sender")
+
             if convertible:
                 if args.dry_run:
                     log(f"would convert {name} ({human(now['bytes'])} disc image)")
                     rows[name] = queue_row(name, now, "waiting", err)
                     continue
                 log(f"converting {name} ({human(now['bytes'])} disc image)")
+                attempted = True
                 progress.queue(list(rows.values()))
                 try:
                     item = convert_disc_image(cfg, name, log, progress=progress)
@@ -1468,6 +1490,7 @@ def main(argv=None):
                     # it next (its marker lets it skip the stability wait, so
                     # it is filed straight away) and its marker is not swept.
                     entries.append(item)
+                    converted = item
                 except PickupError as e:
                     log(f"  convert FAILED, disc left in the inbox: {e}", "ERROR")
                     state[name] = {"shape": now["shape"], "stable": 0,
@@ -1484,6 +1507,8 @@ def main(argv=None):
                 continue
 
             log(f"processing {name} ({now['files']} files, {human(now['bytes'])})")
+            if not args.dry_run:
+                attempted = True
             progress.queue(list(rows.values()))
             try:
                 dests = process_item(cfg, name, log, dry_run=args.dry_run, progress=progress)
