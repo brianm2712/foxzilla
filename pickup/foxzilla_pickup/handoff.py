@@ -12,8 +12,8 @@ import time
 # sha256_file / same_filesystem / free_bytes are called as common.<name> so a
 # test patches them in one place (common).
 from . import common
-from .common import CHUNK, VIDEO_EXTS, PickupError, human, prune_empty, walk_files
-from .classify import classify, guess_show_name
+from .common import CHUNK, VIDEO_EXTS, PickupError, human, prune_empty, route_for, walk_files
+from .classify import classify, guess_show_name, movie_item_name, video_title_year
 from .progress import NULL_PROGRESS
 
 
@@ -131,7 +131,24 @@ def video_files(root):
             if os.path.splitext(rel)[1].lower() in VIDEO_EXTS]
 
 
-def organize_movie_staging(staging, title, log, renames=None):
+# Files that belong to a video and travel with it when a pack is split:
+# "Film.srt", "Film.en.srt", "Film.idx" + "Film.sub" beside "Film.mp4".
+SIDECAR_EXTS = {".srt", ".sub", ".idx", ".ass", ".ssa", ".vtt", ".nfo"}
+
+
+def sidecars_of(staging, video_rel):
+    stem = os.path.splitext(os.path.basename(video_rel))[0]
+    folder = os.path.dirname(video_rel)
+    try:
+        names = os.listdir(os.path.join(staging, folder))
+    except OSError:
+        return []
+    return [os.path.join(folder, n) for n in sorted(names)
+            if os.path.splitext(n)[1].lower() in SIDECAR_EXTS
+            and (os.path.splitext(n)[0] == stem or n.startswith(stem + "."))]
+
+
+def organize_movie_staging(staging, title, log, renames=None, pack=False):
     """
     Tidy a movie inside staging: promote the main feature, push the rest into
     extras/. Multi-movie packs are split into sibling folders.
@@ -143,6 +160,12 @@ def organize_movie_staging(staging, title, log, renames=None):
     {staged rel path: (target title, rel path inside that target)}, so
     reconciliation can follow it. Without that, a renamed feature looks
     missing and every movie with extras fails its own handoff.
+
+    `pack` (the classifier said "film pack") makes every video of feature
+    size a film of its own, whatever its size relative to the largest: in a
+    box set a 720p film is a third the size of a 1080p one, and the 40% rule
+    would have filed it as an extra. Each film's folder is "Title (Year)"
+    from its name or folder, and its subtitles go with it.
     """
     if renames is None:
         renames = {}
@@ -155,6 +178,8 @@ def organize_movie_staging(staging, title, log, renames=None):
     biggest = sizes[ordered[0]]
     threshold = max(biggest * FEATURE_RATIO, MIN_FEATURE_BYTES)
     large = [v for v in ordered if sizes[v] >= threshold]
+    if pack:
+        large = [v for v in ordered if sizes[v] >= MIN_FEATURE_BYTES]
 
     if len(large) > 1:
         # One feature per file name. Upload clients sometimes send the same
@@ -166,7 +191,12 @@ def organize_movie_staging(staging, title, log, renames=None):
         # the rest are left in staging and fall through to _leftovers.
         features = {}
         for v in large:
-            features.setdefault(os.path.splitext(os.path.basename(v))[0], v)
+            key = os.path.splitext(os.path.basename(v))[0]
+            if pack:
+                t, y = video_title_year(v)
+                if y:
+                    key = movie_item_name(t, y)
+            features.setdefault(key, v)
         dupes = len(large) - len(features)
         if dupes:
             log(f"  {dupes} same-named cop{'y' if dupes == 1 else 'ies'} of a feature "
@@ -181,6 +211,10 @@ def organize_movie_staging(staging, title, log, renames=None):
             os.makedirs(folder, exist_ok=True)
             os.rename(os.path.join(staging, v), os.path.join(folder, os.path.basename(v)))
             renames[v] = (movie_title, os.path.basename(v))
+            if pack:
+                for sc in sidecars_of(staging, v):
+                    os.rename(os.path.join(staging, sc), os.path.join(folder, os.path.basename(sc)))
+                    renames[sc] = (movie_title, os.path.basename(sc))
             splits[movie_title] = folder
         # Everything not claimed by a feature is kept, not deleted.
         remaining = walk_files(staging)
@@ -342,19 +376,40 @@ def process_item(cfg, name, log, dry_run=False, progress=NULL_PROGRESS):
 
     rel_paths = [f["path"] for f in manifest["files"]]
     sizes = {f["path"]: f["size"] for f in manifest["files"]}
-    kind, why = classify(name, rel_paths, sizes)
+    # An item inside a sorting folder (Movies/, TV Shows/, Videos/, BJJ/) is
+    # filed where the folder says; only a top-level item is guessed at.
+    base = os.path.basename(name)
+    route = route_for(name)
+    if route:
+        kind, sub = route
+        why = f"uploaded into {name.split('/', 1)[0]}/"
+    else:
+        (kind, why), sub = classify(base, rel_paths, sizes), ""
     log(f"  classified as {kind.upper()} ({why})")
+    is_file = os.path.isfile(src)
 
     if kind == "tv":
-        dest_root = cfg["shows_dest"]
-        title = guess_show_name(name) if os.path.isfile(src) else name
+        lib_root = cfg["shows_dest"]
+        title = guess_show_name(base) if is_file else base
+    elif kind == "video":
+        lib_root = cfg.get("videos_dest") or ""
+        if not lib_root:
+            raise PickupError("this is a Videos item but no Videos library is set "
+                              "(--videos-dest / VIDEOS_DEST); left in the inbox")
+        title = os.path.splitext(base)[0] if is_file else base
     else:
-        dest_root = cfg["movies_dest"]
-        title = os.path.splitext(name)[0] if os.path.isfile(src) else name
+        lib_root = cfg["movies_dest"]
+        title = os.path.splitext(base)[0] if is_file else base
+    # A sorting folder can name a collection inside the library
+    # (BJJ/ -> Videos/Jiu Jitsu Tutorials/<course>). Staging stays at the
+    # library root, beside every other hidden working dir.
+    dest_root = os.path.join(lib_root, sub) if sub else lib_root
 
-    staging_base = os.path.join(dest_root, ".staging")
-    quarantine = os.path.join(dest_root, ".quarantine")
+    staging_base = os.path.join(lib_root, ".staging")
+    quarantine = os.path.join(lib_root, ".quarantine")
     os.makedirs(staging_base, exist_ok=True)
+    if not dry_run:
+        os.makedirs(dest_root, exist_ok=True)
     staging = os.path.join(staging_base, f"{os.getpid()}-{int(started)}")
 
     placements, skipped, conflicts = {}, [], []
@@ -363,7 +418,8 @@ def process_item(cfg, name, log, dry_run=False, progress=NULL_PROGRESS):
         stage(src, manifest, staging, log, dry_run=dry_run, progress=progress)
 
         if kind == "movie" and not dry_run:
-            targets = organize_movie_staging(staging, title, log, renames)
+            targets = organize_movie_staging(staging, title, log, renames,
+                                             pack=why.startswith("film pack"))
         else:
             targets = {title: staging}
 

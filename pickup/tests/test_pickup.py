@@ -1187,6 +1187,120 @@ check("Dockerfile healthcheck uses --health",
       "CMD python3 /app/media_pickup.py --health || exit 1" in dockerfile
       and "--whoami ||" not in dockerfile)
 
+# ---------------------------------------------------------------- film packs, Videos, sorting folders
+from foxzilla_pickup import classify as CL
+
+print("\ntitle_year  (box-set film names -> 'Title (Year)')")
+for raw, want in [
+        ("Underworld.Evolution.2006.1080p.BrRip.x264.YIFY", ("Underworld Evolution", "2006")),
+        ("Underworld EXTENDED (2003) [1080p]", ("Underworld", "2003")),
+        ("1917 (2019)", ("1917", "2019")),
+        ("Blade Runner 2049 (2017)", ("Blade Runner 2049", "2017")),
+        ("Special Forces (2011)", ("Special Forces", "2011")),
+        ("Final Cut (2004)", ("Final Cut", "2004")),
+        ("Underworld Blood Wars T00-1", (None, None)),
+        ("Movie.1080p.x264", (None, None))]:
+    check(f"title_year({raw!r})", CL.title_year(raw) == want, CL.title_year(raw))
+
+print("\nclassify_film_packs_and_videos  (2026-11-06: Underworld and Jiu Jitsu Tutorials both landed in TV)")
+uw = ["Underworld Awakening (2012)/Underworld.Awakening.2012.720p.BrRip.x264.YIFY.mp4",
+      "Underworld Blood Wars T00-1.m4v",
+      "Underworld EXTENDED (2003) [1080p]/Underworld.EXTENDED.2003.1080p.BrRip.x264.YIFY.mp4",
+      "Underworld Evolution (2006) [1080p]/Underworld.Evolution.2006.1080p.BrRip.x264.YIFY.mp4",
+      "Underworld Rise of the Lycans (2009) [1080p]/Underworld.Rise.of.the.Lycans.2009.1080p.BrRip.x264.YIFY.mp4"]
+k, why = MP.classify("Underworld", uw)
+check("Underworld box set -> movie (film pack)", k == "movie" and why.startswith("film pack"), why)
+k, why = MP.classify("Jiu Jitsu Tutorials", [f"K Guard/0{i}- Lesson.mp4" for i in range(8)])
+check("'Jiu Jitsu Tutorials' -> video", k == "video", why)
+k, why = MP.classify("Craig Jones Masterclass", [f"S01E0{i}.mp4" for i in range(6)])
+check("instructional name beats episode-like lesson numbers", k == "video", why)
+pe = [f"Planet Earth 2006 - Part {n}.mkv" for n in "ABCDE"]
+check("one shared year is not a film pack", MP.classify("Planet Earth 2006", pe)[0] == "tv",
+      MP.classify("Planet Earth 2006", pe))
+check("MasterChef is not 'masterclass'", MP.classify("MasterChef", [f"{i}.mkv" for i in range(5)])[0] == "tv")
+check("a season is still TV", MP.classify("Taboo", [f"Taboo.S01E0{i}.mkv" for i in range(8)])[0] == "tv")
+
+print("\nfilm_pack_splits_by_title_year  (each film its own folder, the 720p one too, subtitles go with it)")
+e = Env()
+handoff.MIN_FEATURE_BYTES = 10000
+up = os.path.join(e.upload, "Underworld")
+sizes = [12000, 30000, 50000, 45000, 40000]       # Awakening (720p) is under 40% of the largest
+for rel, n in zip(uw, sizes):
+    mkfile(os.path.join(up, rel), n)
+    if "Blood" not in rel:
+        mkfile(os.path.join(up, os.path.splitext(rel)[0] + ".srt"), 100)
+mkfile(os.path.join(up, "Underworld Awakening (2012)", "WWW.YIFY-TORRENTS.COM.jpg"), 200)
+e.run()
+got = sorted(os.listdir(e.movies))
+want = ["Underworld (2003)", "Underworld Awakening (2012)", "Underworld Blood Wars T00-1",
+        "Underworld Evolution (2006)", "Underworld Rise of the Lycans (2009)"]
+check("five film folders, named Title (Year)", all(w in got for w in want), got)
+check("nothing filed under TV", os.listdir(e.shows) in ([], [".staging"]), os.listdir(e.shows))
+aw = os.path.join(e.movies, "Underworld Awakening (2012)")
+check("the small 720p film is a feature, not an extra",
+      os.path.exists(os.path.join(aw, "Underworld.Awakening.2012.720p.BrRip.x264.YIFY.mp4")), os.listdir(aw))
+check("its subtitle went with it",
+      os.path.exists(os.path.join(aw, "Underworld.Awakening.2012.720p.BrRip.x264.YIFY.srt")))
+check("torrent junk kept in _leftovers, not deleted",
+      any(f.endswith(".jpg") for _r, _f, fs in os.walk(os.path.join(e.movies, "_leftovers")) for f in fs))
+check("inbox emptied", not os.path.exists(up))
+handoff.MIN_FEATURE_BYTES = 200 * 1024 * 1024
+
+print("\nsorting_folders  (BJJ/, Videos/, Movies/, TV Shows/ in the inbox decide where an item goes)")
+e = Env()
+vids = os.path.join(e.base, "videos")
+os.makedirs(vids)
+for d in ("BJJ", "Videos", "Movies", "TV Shows"):
+    os.makedirs(os.path.join(e.upload, d))
+for i in range(6):
+    mkfile(os.path.join(e.upload, "BJJ", "K Guard", f"4378-01-0{i}- Lesson.mp4"), 3000)
+    mkfile(os.path.join(e.upload, "Videos", "Home Movies", f"clip{i}.mp4"), 3000)
+    mkfile(os.path.join(e.upload, "Movies", "Odd Film", f"part{i}.mkv"), 3000)   # would be guessed TV
+mkfile(os.path.join(e.upload, "TV Shows", "Some Documentary (2019)", "film.mkv"), 3000)  # would be guessed movie
+open(MP.marker_for(e.upload, "BJJ/K Guard"), "w").write("done")
+check("marker for a routed item lives inside its folder",
+      MP.marker_for(e.upload, "BJJ/K Guard") == os.path.join(e.upload, "BJJ", ".K Guard.complete"))
+for _ in range(4):        # one item per run
+    e.run("--videos-dest", vids)
+check("BJJ/<course> -> Videos/Jiu Jitsu Tutorials/<course>",
+      len(videos_under(os.path.join(vids, "Jiu Jitsu Tutorials", "K Guard"))) == 6,
+      os.listdir(vids))
+check("Videos/<item> -> Videos/<item>", len(videos_under(os.path.join(vids, "Home Movies"))) == 6)
+check("Movies/<item> -> Movies even with 6 similar files",
+      len(videos_under(os.path.join(e.movies, "Odd Film"))) >= 1 and not os.path.exists(os.path.join(e.shows, "Odd Film")),
+      os.listdir(e.movies))
+check("TV Shows/<item> -> TV even if it looks like a film",
+      os.path.exists(os.path.join(e.shows, "Some Documentary (2019)")), os.listdir(e.shows))
+check("the sorting folders themselves stay, empty",
+      all(os.path.isdir(os.path.join(e.upload, d)) and not [f for f in os.listdir(os.path.join(e.upload, d))]
+          for d in ("BJJ", "Videos", "Movies", "TV Shows")),
+      {d: os.listdir(os.path.join(e.upload, d)) for d in ("BJJ", "Videos", "Movies", "TV Shows")})
+log = open(e.log).read()
+check("an empty sorting folder is never held as an item", "holding BJJ" not in log and "holding Videos" not in log)
+check("routing is logged", "uploaded into BJJ/" in log)
+
+print("\nvideos_without_a_library  (a Videos item waits, it is never guessed into TV)")
+e = Env()
+for i in range(6):
+    mkfile(os.path.join(e.upload, "BJJ", "Octopus Guard", f"0{i}.mp4"), 3000)
+e.run()
+check("left in the inbox", len(videos_under(os.path.join(e.upload, "BJJ", "Octopus Guard"))) == 6)
+check("nothing filed anywhere", videos_under(e.shows) == [] and videos_under(e.movies) == [])
+check("failure says why", any("no Videos library" in l for l in e.tail(4)), e.tail(4))
+
+print("\nsweep_markers_in_sorting_folders")
+e = Env()
+os.makedirs(os.path.join(e.upload, "BJJ"))
+open(os.path.join(e.upload, "BJJ", ".Ghost.complete"), "w").write("done")
+e.run()
+check("stale marker inside a sorting folder removed",
+      not os.path.exists(os.path.join(e.upload, "BJJ", ".Ghost.complete")))
+run_sh = open(os.path.join(os.path.dirname(HERE), "run.sh")).read()
+check("run.sh mounts the Videos library",
+      "-e VIDEOS_DEST=/videos" in run_sh and "/mnt/nas-media/videos:/videos" in run_sh)
+ep = open(os.path.join(os.path.dirname(HERE), "docker-entrypoint.sh")).read()
+check("entrypoint passes --videos-dest", "${VIDEOS_DEST:+--videos-dest $VIDEOS_DEST}" in ep)
+
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
     print("FAILED:"); [print("  - " + f) for f in FAIL]
