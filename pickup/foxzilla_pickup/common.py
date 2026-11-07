@@ -19,6 +19,7 @@ DEFAULTS = {
     "upload_dir": "/data/incoming",
     "movies_dest": "/data/movies",
     "shows_dest": "/data/tv",
+    "videos_dest": "",     # Videos library; empty = Videos items wait in the inbox
     "state_file": "/data/state.json",
     "log_file": "/data/pickup.log",
     "lock_file": os.path.join(
@@ -46,8 +47,55 @@ JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
 COMPLETE_SUFFIX = ".complete"
 
 
+# Sorting folders. Anything uploaded INTO one of these top-level folders is
+# filed where the folder says, whatever its name looks like - the classifier
+# only guesses for items left at the top level. Matched case-insensitively.
+# name -> (kind, collection folder inside that library or "")
+ROUTE_DIRS = {
+    "movies": ("movie", ""),
+    "tv shows": ("tv", ""),
+    "tv": ("tv", ""),
+    "videos": ("video", ""),
+    "bjj": ("video", "Jiu Jitsu Tutorials"),
+}
+
+
+def is_route_dir(upload_dir: str, entry: str) -> bool:
+    return entry.lower() in ROUTE_DIRS and os.path.isdir(os.path.join(upload_dir, entry))
+
+
+def route_for(name: str):
+    """'BJJ/K Guard' -> ('video', 'Jiu Jitsu Tutorials'); a top-level item -> None."""
+    if "/" not in name:
+        return None
+    return ROUTE_DIRS.get(name.split("/", 1)[0].lower())
+
+
+def list_items(upload_dir: str, keep) -> list:
+    """
+    The items in the inbox: each top-level entry, except that a sorting
+    folder is never an item itself - each entry inside it is, named
+    "<folder>/<entry>". `keep(entry_name)` filters out markers, junk etc.
+    """
+    items = []
+    for e in sorted(os.listdir(upload_dir)):
+        if not keep(e):
+            continue
+        if is_route_dir(upload_dir, e):
+            try:
+                inner = sorted(os.listdir(os.path.join(upload_dir, e)))
+            except OSError:
+                continue
+            items.extend(f"{e}/{c}" for c in inner if keep(c))
+        else:
+            items.append(e)
+    return items
+
+
 def marker_for(upload_dir: str, name: str) -> str:
-    return os.path.join(upload_dir, f".{name}{COMPLETE_SUFFIX}")
+    """'.<name>.complete' beside the item - inside its sorting folder if it has one."""
+    folder, base = os.path.split(name)
+    return os.path.join(upload_dir, folder, f".{base}{COMPLETE_SUFFIX}")
 
 
 def sweep_markers(upload_dir: str, entries) -> None:
@@ -56,14 +104,21 @@ def sweep_markers(upload_dir: str, entries) -> None:
         listing = os.listdir(upload_dir)
     except OSError:
         return
-    for f in listing:
-        if not (f.startswith(".") and f.endswith(COMPLETE_SUFFIX)):
+    folders = [""] + [e for e in listing if is_route_dir(upload_dir, e)]
+    for folder in folders:
+        try:
+            names = os.listdir(os.path.join(upload_dir, folder))
+        except OSError:
             continue
-        if f[1:-len(COMPLETE_SUFFIX)] not in entries:
-            try:
-                os.remove(os.path.join(upload_dir, f))
-            except OSError:
-                pass
+        for f in names:
+            if not (f.startswith(".") and f.endswith(COMPLETE_SUFFIX)):
+                continue
+            item = f[1:-len(COMPLETE_SUFFIX)]
+            if (f"{folder}/{item}" if folder else item) not in entries:
+                try:
+                    os.remove(os.path.join(upload_dir, folder, f))
+                except OSError:
+                    pass
 
 
 CHUNK = 4 * 1024 * 1024

@@ -10,7 +10,7 @@ import time
 # jellyfin.) so tests patch them in one place.
 from . import handoff, jellyfin
 from .common import (DEFAULTS, DISC_IMAGE_EXTS, QUIET_SECONDS, STABLE_POLLS, Log, PickupError,
-                     acquire_lock, human, is_junk, marker_for, observe, sweep_markers)
+                     acquire_lock, human, is_junk, list_items, marker_for, observe, sweep_markers)
 from .disc import NAME_SUFFIX, convert_disc_image, ffmpeg_available, name_file_for
 from .handoff import report_staging
 from .jellyfin import cmd_login, cmd_logout, jf_rescan, load_credentials
@@ -104,9 +104,9 @@ def main(argv=None):
     rows = {}
 
     try:
-        entries = [e for e in sorted(os.listdir(cfg["upload_dir"]))
-                   if not e.startswith(".") and not is_junk(e)
-                   and not e.endswith(NAME_SUFFIX)]
+        entries = list_items(cfg["upload_dir"],
+                             lambda e: not e.startswith(".") and not is_junk(e)
+                             and not e.endswith(NAME_SUFFIX))
         rows.update((n, queue_row(n, None, "waiting")) for n in entries)
         report_staging(cfg, log, progress, dry_run=args.dry_run)
         if not entries:
@@ -176,12 +176,15 @@ def main(argv=None):
                 continue
 
             imgs = [p for p in now["shape"] if os.path.splitext(p)[1].lower() in DISC_IMAGE_EXTS]
-            convertible = bool(imgs) and os.path.isfile(path) and ffmpeg_available()
+            # Discs are converted at the top level only: the MKV is written
+            # back into the inbox root under the disc's own name.
+            convertible = (bool(imgs) and os.path.isfile(path) and "/" not in name
+                           and ffmpeg_available())
             if imgs and not convertible:
                 # A disc image we cannot remux here. Filing it would only hide
                 # it: Jellyfin ignores .iso. Leave it where the uploader can
                 # see it and say so once, not every tick.
-                why = ("ffmpeg is not installed" if os.path.isfile(path)
+                why = ("ffmpeg is not installed" if os.path.isfile(path) and "/" not in name
                        else "put the .iso at the top level of the inbox to have it remuxed")
                 if prev.get("held") != "disc image":
                     more = f" +{len(imgs) - 1} more" if len(imgs) > 1 else ""
