@@ -94,3 +94,4 @@ except F.TransferError as e:
 
 print("\nsignature rejections logged by the mock:", mocks.S3.bad_sigs or "none")
 print("\n" + ("ALL PROTOCOL TESTS PASSED" if ok else "*** THERE WERE FAILURES ***"))
+sys.exit(0 if ok else 1)

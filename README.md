@@ -89,7 +89,9 @@ Each destination directory is listed once rather than stat'ed per file. Over SFT
 
 **Progress and rate** come from watching the file's own size: a free local stat for downloads, one cheap `stat` over the multiplexed SSH connection for uploads. OpenSSH's own meter is not used — it draws nothing when driven programmatically, pty or not.
 
-**Interrupted transfers resume** rather than restarting, via `reget` / `reput`.
+**Cancel really stops a transfer.** SFTP kills its `sftp` process; FTP aborts and reconnects so the control connection is clean; S3 and WebDAV uploads stream from disk and stop mid-body. Downloads go to `<name>.part` and are renamed only when complete, so a cancelled or failed download leaves nothing behind. Quit asks first while anything is running. Interrupted transfers restart from the beginning; they do not resume.
+
+**A stalled SFTP transfer is killed** after five minutes without progress, and SSH keepalives (15 s, four misses) end a dead connection within a minute.
 
 **A site can pin the folder it opens in.** Set `"path"` on an SFTP site and it lands there instead of the account's home — a deep drop folder becomes one click rather than five. Local sites already worked this way.
 
@@ -147,11 +149,13 @@ python3 client/foxzilla.py --check mediadrop
 ## Tests
 
 ```
-client/tests/run.sh              # FTP and WebDAV/S3 run against mock servers
-                                 # SFTP tests need FOXZILLA_TEST_SSH_HOST set
-python3 pickup/tests/test_pickup.py
-python3 pickup/tests/test_credentials.py
+python3 tests/run_all.py         # every test file; non-zero exit if any fails
+python3 tests/run_all.py client  # just one area (client, web, build, pickup)
 ```
+
+FTP and WebDAV/S3 run against mock servers on loopback, and the SFTP password
+test drives a pty, so run those outside any sandbox that forbids either. The
+live SFTP tests skip unless `FOXZILLA_TEST_SSH_HOST` is set.
 
 The pickup tests are named for the bugs they reproduce (`bug_1_multiseason_merge_crash`, `bug_2_retry_duplication`, …). The client's FTP, WebDAV and S3 tests spin up their own servers; the S3 mock independently recomputes the SigV4 signature and rejects mismatches.
 

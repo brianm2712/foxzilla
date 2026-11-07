@@ -6,3 +6,9 @@ secrets.json
 sites.json
 state.json
 receipts/
+
+# build output and local clutter
+dist/
+.DS_Store
+.claude/
+.preview/

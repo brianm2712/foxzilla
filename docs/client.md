@@ -17,8 +17,13 @@ installed, so there is nothing to install and nothing to audit but the source:
 | WebDAV     | stdlib `http.client` + ElementTree | Nextcloud-style `PROPFIND`/`MKCOL`/`MOVE` |
 | Local disk | `os` / `shutil`               | a local "site" can pin a start folder |
 
-Copy `foxzilla.py` to any machine with Python 3.9+ and Tk and it runs —
-Linux or macOS.
+Copy the `client/` folder (`foxzilla.py` plus the `foxzilla/` package beside it)
+to any machine with Python 3.9+ and Tk and it runs — Linux or macOS. Nothing to
+install. `python3 -m foxzilla` from inside `client/` works too.
+
+Layout: `foxzilla/backends/` (one module per protocol), `queue.py` (the transfer
+queue and per-item batches), `scan.py` (the pre-flight scan), `config.py` (sites
+and secrets), `gui.py` (the Tk window, imported only when needed), `cli.py`.
 
 ## Sites
 
@@ -40,11 +45,23 @@ menu, or by hand:
 The `sftp` type takes a `~/.ssh/config` alias in `host`, which is why the
 server entry can be a bare alias — no user, port or key needed.
 
-S3 credentials fall back to `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` when
-left out of the site. FTP and WebDAV passwords are prompted for at connect and
-are **not** stored unless you deliberately write them to
-`~/.config/foxzilla/secrets.json`, which is plain JSON at 0600 — obfuscation, not
-encryption.
+**Secrets stay out of `sites.json`.** Passwords are prompted for at connect; tick
+*Remember* and, once the connection has worked, the password is saved in the
+**macOS Keychain** (service `foxzilla`, account = site name), handed to
+`/usr/bin/security` on stdin so it never appears in a process list. S3 keys typed
+into a site, or found in an existing `sites.json`, are moved there too. Where
+there is no keychain (Linux), or it refuses, the fallback is
+`~/.config/foxzilla/secrets.json` at 0600 — plain JSON, obfuscation, not
+encryption. *Sites › Forget saved password* removes one; removing a site forgets
+its secrets. S3 credentials still fall back to `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` when nothing is stored.
+
+**FTPS checks the server certificate.** For a self-signed homelab server either
+set `"ca_file"` to its certificate (or CA) or, knowingly, `"insecure_tls": true`.
+
+**Drop folders** (`"drop": true` on a site) get a `.<name>.complete` marker per
+item, written only once every file of that item has arrived and none failed or
+was cancelled.
 
 ## The queue
 
@@ -74,7 +91,7 @@ the file is relayed through a temp file on this machine.
 
 ## Tests
 
-    tests/run.sh
+    python3 tests/run_all.py client
 
 `test_ftp` and `test_dav_s3` start their own mock servers and need nothing
 external. `test_sftp`, `test_queue` and `test_gui` transfer real files to whatever

@@ -35,6 +35,8 @@ class Session(threading.Thread):
     def handle(self, cmd, arg):
         if cmd == "USER": return self.send("331 need password")
         if cmd == "PASS":
+            if arg != PASSWORD:
+                return self.send("530 login incorrect")
             self.authed = True; return self.send("230 logged in")
         if not self.authed and cmd not in ("QUIT", "FEAT"):
             return self.send("530 not logged in")

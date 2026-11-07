@@ -10,9 +10,10 @@ if not SSH_HOST:
     raise SystemExit(0)
 s = F.SFTPBackend(host=SSH_HOST, label=SSH_HOST); s.connect()
 
+failures = []
 def expect_fail(what, fn):
     try:
-        fn(); print(f"FAIL - {what} should have raised")
+        fn(); print(f"FAIL - {what} should have raised"); failures.append(what)
     except F.TransferError as e:
         print(f"ok  - {what}: {str(e)[:70]}")
 
@@ -32,3 +33,4 @@ print("ok  - listdir still works:", len(s.listdir("/etc")) > 10)
 s.remove("/tmp/foxzilla_ok.txt")
 print("ok  - cleaned up")
 s.close()
+sys.exit(1 if failures else 0)
